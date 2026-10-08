@@ -2341,9 +2341,9 @@ def fetch_domain_faces():
         conn = g.db_tools.connect()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-        # 1. Adım: EyeOfWebFaceID tablosundan face box verilerini al
+        # 1. Adım: EyeOfWebFaceID tablosundan kaydın varlığını doğrula
         face_query = """
-        SELECT f."ID" as face_id, f."FaceBox" as facebox
+        SELECT f."ID" as face_id
         FROM "EyeOfWebFaceID" f
         WHERE f."ID" = %s
         """
@@ -2361,8 +2361,11 @@ def fetch_domain_faces():
                 }
             )
 
-        # Face Box verisi
-        facebox = face_result["facebox"]
+        # Face Box verisi artık Milvus'ta (EyeOfWebFaceDataMilvus)
+        milvus_attrs = g.db_tools.get_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, face_id_int
+        )
+        facebox = milvus_attrs.get("face_box") if milvus_attrs else None
 
         # 2. Adım: ImageBasedMain tablosundan face_id'yi içeren kayıtları bul
         # Tüm URL bileşenlerini alacağız
@@ -2426,10 +2429,22 @@ def fetch_domain_faces():
                 }
             )
 
-        # Facebox verisi
-        facebox_data = np.array(
-            ast.literal_eval(facebox), dtype=np.float32
-        ).tolist()  # JSON için listeye çevir
+        # Facebox verisi (Milvus liste döndürür; eski string formatı için geriye uyumluluk)
+        if facebox is None:
+            g.db_tools.releaseConnection(conn, cursor)
+            return jsonify(
+                {
+                    "success": False,
+                    "message": f"Face ID için Milvus'ta facebox bulunamadı: {face_id}",
+                    "faces": [],
+                }
+            )
+        if isinstance(facebox, str):
+            facebox_data = np.array(
+                ast.literal_eval(facebox), dtype=np.float32
+            ).tolist()
+        else:
+            facebox_data = [float(v) for v in facebox]
 
         # Sonuç
         face_data = {
@@ -2521,19 +2536,16 @@ def deep_insight(face_id):
                     # Bu yüzün detaylarını sakla (eğer henüz yapılmadıysa)
                     if other_face_id not in face_co_occurrence_details:
                         # Bu yüzün bulunduğu görsellerden birini bul
+                        # (yüz öznitelikleri artık Milvus'ta, SQL sadece URL/risk verir)
                         face_query = """
                         SELECT 
                             f."ID" as face_id,
-                            f."FaceGender" as gender,
-                            f."FaceAge" as age,
-                            f."DetectionScore" as score,
                             m."RiskLevel" as risk_level,
                             m."ImageID" as image_id,
                             m."ImageProtocol" as protocol,
                             bd."Domain" as domain,
                             iup."Path" as path,
-                            iue."Etc" as url_etc,
-                            f."FaceBox" as facebox
+                            iue."Etc" as url_etc
                         FROM "EyeOfWebFaceID" f
                         JOIN "ImageBasedMain" m ON f."ID" = ANY(m."FaceID")
                         JOIN "BaseDomainID" bd ON m."BaseDomainID" = bd."ID"
@@ -2555,23 +2567,34 @@ def deep_insight(face_id):
                                 face_result["url_etc"],
                             )
 
+                            # Yüz öznitelikleri Milvus'tan (EyeOfWebFaceDataMilvus)
+                            milvus_attrs = (
+                                g.db_tools.get_milvus_face_attributes(
+                                    EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                                    other_face_id,
+                                )
+                                or {}
+                            )
+                            raw_facebox = milvus_attrs.get("face_box")
+                            if isinstance(raw_facebox, str):
+                                facebox_data = np.array(
+                                    ast.literal_eval(raw_facebox), dtype=np.float32
+                                ).tolist()
+                            elif raw_facebox is not None:
+                                facebox_data = [float(v) for v in raw_facebox]
+                            else:
+                                facebox_data = None
+
                             # Yüz detaylarını sakla
                             face_co_occurrence_details[other_face_id] = {
                                 "face_id": other_face_id,
-                                "gender": face_result["gender"],
-                                "age": face_result["age"],
-                                "score": face_result["score"],
+                                "gender": milvus_attrs.get("face_gender"),
+                                "age": milvus_attrs.get("face_age"),
+                                "score": milvus_attrs.get("detection_score"),
                                 "risk_level": face_result["risk_level"],
                                 "original_image_url": image_url,
                                 "domain": face_result["domain"],
-                                "facebox": (
-                                    np.array(
-                                        ast.literal_eval(face_result["facebox"]),
-                                        dtype=np.float32,
-                                    ).tolist()
-                                    if face_result["facebox"]
-                                    else None
-                                ),
+                                "facebox": facebox_data,
                             }
 
         # En sık görülen 10 yüzü al
@@ -2698,42 +2721,36 @@ def face_similarity_analysis(face_id):
         face_embeddings = {}
         face_details_cache = {}
         if all_face_ids_in_related_images:
-            query_placeholders = ",".join(["%s"] * len(all_face_ids_in_related_images))
-            details_query = f"""
-            SELECT f."ID", f."FaceEmbeddingData", f."FaceGender", f."FaceAge"
-            FROM "EyeOfWebFaceID" f WHERE f."ID" IN ({query_placeholders})
-            """
-            cursor.execute(details_query, list(all_face_ids_in_related_images))
-            face_data_batch = cursor.fetchall()
-
-            for face_data in face_data_batch:
-                face_id = face_data["ID"]
-                if face_data["FaceEmbeddingData"]:
-                    try:
-                        embedding = np.array(
-                            ast.literal_eval(face_data["FaceEmbeddingData"]),
-                            dtype=np.float32,
-                        )
-                        if embedding.size == 512:
-                            face_embeddings[face_id] = embedding
-                            face_details_cache[face_id] = {
-                                "id": face_id,
-                                "gender": (
-                                    "Erkek" if face_data["FaceGender"] else "Kadın"
-                                ),
-                                "age": face_data["FaceAge"],
-                            }
-                        else:
-                            current_app.logger.warning(
-                                f"Yüz ID {face_id} için beklenmeyen embedding boyutu: {embedding.size}"
-                            )
-                    except Exception as emb_err:
-                        current_app.logger.error(
-                            f"Yüz ID {face_id} için embedding parse hatası: {emb_err}"
-                        )
-                else:
+            # Embedding ve temel öznitelikler artık Milvus'ta (EyeOfWebFaceDataMilvus)
+            batch_attrs = g.db_tools.get_batch_milvus_face_attributes(
+                EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                list(all_face_ids_in_related_images),
+            )
+            for face_id, attrs in batch_attrs.items():
+                emb = attrs.get("face_embedding_data")
+                if emb is None:
                     current_app.logger.warning(
                         f"Yüz ID {face_id} için embedding verisi bulunamadı."
+                    )
+                    continue
+                try:
+                    embedding = np.array(emb, dtype=np.float32)
+                    if embedding.size == 512:
+                        face_embeddings[face_id] = embedding
+                        face_details_cache[face_id] = {
+                            "id": face_id,
+                            "gender": (
+                                "Erkek" if attrs.get("face_gender") else "Kadın"
+                            ),
+                            "age": attrs.get("face_age"),
+                        }
+                    else:
+                        current_app.logger.warning(
+                            f"Yüz ID {face_id} için beklenmeyen embedding boyutu: {embedding.size}"
+                        )
+                except Exception as emb_err:
+                    current_app.logger.error(
+                        f"Yüz ID {face_id} için embedding parse hatası: {emb_err}"
                     )
 
         # 4. İlişkili yüz çiftlerinin benzerliğini hesapla
@@ -2792,11 +2809,15 @@ def face_similarity_analysis(face_id):
         # Toplu olarak ek detayları (URL bileşenleri ve FaceBox) al
         face_display_details = {}
         if face_ids_to_fetch_details_for:
+            # FaceBox artık Milvus'ta — topluca çek (SQL yalnızca URL bileşenlerini verir)
+            facebox_batch = g.db_tools.get_batch_milvus_face_attributes(
+                EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                list(face_ids_to_fetch_details_for),
+            )
             query_placeholders = ",".join(["%s"] * len(face_ids_to_fetch_details_for))
             details_query = f"""
                 SELECT DISTINCT ON (f."ID") -- Her yüz için sadece bir satır al (ilk bulunan)
                     f."ID" as face_id,
-                    f."FaceBox",
                     m."ImageProtocol",
                     bd_img."Domain" as image_domain,
                     im_path."Path" as image_path,
@@ -2820,13 +2841,15 @@ def face_similarity_analysis(face_id):
                     row["image_path"],
                     row["image_etc"],
                 )
-                facebox = (
-                    np.array(
-                        ast.literal_eval(row["FaceBox"]), dtype=np.float32
+                raw_facebox = facebox_batch.get(face_id, {}).get("face_box")
+                if isinstance(raw_facebox, str):
+                    facebox = np.array(
+                        ast.literal_eval(raw_facebox), dtype=np.float32
                     ).tolist()
-                    if row["FaceBox"]
-                    else None
-                )
+                elif raw_facebox is not None:
+                    facebox = [float(v) for v in raw_facebox]
+                else:
+                    facebox = None
                 face_display_details[face_id] = {
                     "original_image_url": original_url,
                     "facebox": facebox,
@@ -4766,37 +4789,37 @@ def download_relationship_details_report(target_face_id, face_id):
 
         # Yüz gruplarını yeniden oluştur (veya session'dan al, şimdilik yeniden oluşturalım)
         # Bu kısım /face_relationship_details içindeki mantıkla aynı olmalı
-        # 1. Embedding'leri al
-        cursor.execute(
-            'SELECT "ID", "FaceEmbeddingData" FROM "EyeOfWebFaceID" WHERE "ID" IN (%s, %s)',
-            (target_face_id, face_id),
+        # 1. Embedding'leri al (artık Milvus'ta — EyeOfWebFaceDataMilvus)
+        target_attrs = g.db_tools.get_batch_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, [target_face_id, face_id]
         )
-        embedding_data = cursor.fetchall()
-        if len(embedding_data) < 2:
+        face_embeddings = {}
+        for fid in (target_face_id, face_id):
+            emb = target_attrs.get(fid, {}).get("face_embedding_data")
+            if emb is not None:
+                face_embeddings[fid] = np.array(emb, dtype=np.float32)
+        if len(face_embeddings) < 2:
             raise ValueError("Hedef veya ilişkili yüz embedding bulunamadı")
-        face_embeddings = {
-            data["ID"]: np.array(
-                ast.literal_eval(data["FaceEmbeddingData"]), dtype=np.float32
-            )
-            for data in embedding_data
-        }
 
-        # 2. Benzer yüzleri bul
+        # 2. Benzer yüzleri bul (diğer yüzlerin embedding'leri Milvus'tan)
         target_group_ids = {target_face_id}
         face_group_ids = {face_id}
         cursor.execute(
-            'SELECT "ID", "FaceEmbeddingData" FROM "EyeOfWebFaceID" WHERE "ID" != %s AND "ID" != %s AND "FaceEmbeddingData" IS NOT NULL',
+            'SELECT "ID" FROM "EyeOfWebFaceID" WHERE "ID" != %s AND "ID" != %s',
             (target_face_id, face_id),
         )
-        all_other_faces = cursor.fetchall()
+        other_ids = [r["ID"] for r in cursor.fetchall()]
+        other_attrs = g.db_tools.get_batch_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, other_ids
+        )
         target_embedding = face_embeddings[target_face_id]
         face_embedding = face_embeddings[face_id]
 
-        for other_face in all_other_faces:
-            other_id = other_face["ID"]
-            other_embedding = np.array(
-                ast.literal_eval(other_face["FaceEmbeddingData"]), dtype=np.float32
-            )
+        for other_id, _attrs in other_attrs.items():
+            emb = _attrs.get("face_embedding_data")
+            if emb is None:
+                continue
+            other_embedding = np.array(emb, dtype=np.float32)
             if other_embedding.size == 512:
                 similarity_to_target = np.dot(target_embedding, other_embedding) / (
                     np.linalg.norm(target_embedding) * np.linalg.norm(other_embedding)
@@ -4953,17 +4976,14 @@ def download_relationship_details_report(target_face_id, face_id):
                             img_height, img_width = cv_image.shape[:2]
                             face_ids_in_image = [f["id"] for f in faces_metadata]
                             if face_ids_in_image:
-                                query_placeholders = ",".join(
-                                    ["%s"] * len(face_ids_in_image)
+                                # FaceBox artık Milvus'ta — topluca çek
+                                fb_attrs = g.db_tools.get_batch_milvus_face_attributes(
+                                    EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                                    face_ids_in_image,
                                 )
-                                # Use tuple for query parameters
-                                cursor.execute(
-                                    f'SELECT "ID", "FaceBox" FROM "EyeOfWebFaceID" WHERE "ID" IN ({query_placeholders})',
-                                    tuple(face_ids_in_image),
-                                )
-                                face_boxes_results = cursor.fetchall()
                                 face_box_map = {
-                                    fb["ID"]: fb["FaceBox"] for fb in face_boxes_results
+                                    fid: attrs.get("face_box")
+                                    for fid, attrs in fb_attrs.items()
                                 }
                                 drawn_boxes = 0
                                 for face_meta in faces_metadata:
@@ -4978,10 +4998,15 @@ def download_relationship_details_report(target_face_id, face_id):
                                                 face_id_in_image in face_group_ids
                                             )
                                             if is_target or is_related:
-                                                facebox = np.array(
-                                                    ast.literal_eval(facebox_bytes),
-                                                    dtype=np.float32,
-                                                )
+                                                if isinstance(facebox_bytes, str):
+                                                    facebox = np.array(
+                                                        ast.literal_eval(facebox_bytes),
+                                                        dtype=np.float32,
+                                                    )
+                                                else:
+                                                    facebox = np.array(
+                                                        facebox_bytes, dtype=np.float32
+                                                    )
                                                 if len(facebox) == 4:
                                                     x1, y1, x2, y2 = map(int, facebox)
                                                     x1, y1 = max(0, x1), max(0, y1)

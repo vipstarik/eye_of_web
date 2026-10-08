@@ -2118,9 +2118,10 @@ class DatabaseTools:
         cursor = conn.cursor(cursor_factory=DictCursor)
         results = []
         try:
+            # DetectionScore/FaceGender/FaceAge artık PostgreSQL şemasında yok — Milvus'tan çekilir.
             query = """
-            SELECT "ID", "FaceName", "Organizer", "OrganizerLevel", "BirthDateAndLocation", "ImageHash", 
-                   "DetectionScore", "FaceGender", "FaceAge", "DetectionDate"
+            SELECT "ID", "MilvusID", "FaceName", "Organizer", "OrganizerLevel", "BirthDateAndLocation", "ImageHash", 
+                   "DetectionDate"
             FROM "EgmArananlar"
             WHERE 1=1
             """
@@ -2156,17 +2157,21 @@ class DatabaseTools:
             query += ' ORDER BY "DetectionDate" DESC'
 
             cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+
+            # Cinsiyet / yaş / skor Milvus'ta (EgmArananlarMilvus) — MilvusID ile topluca çek
+            egm_milvus_map = self._query_milvus_entities_by_ids(
+                EGM_ARANANLAR_MILVUS_COLLECTION_NAME,
+                [row["MilvusID"] for row in rows],
+                ["face_gender", "face_age", "detection_score"],
+            )
 
             # Sonuçları teker teker işle
             img_cursor = conn.cursor(
                 cursor_factory=DictCursor
             )  # Resim için ayrı cursor
             try:
-                while True:
-                    face = cursor.fetchone()
-                    if face is None:
-                        break
-
+                for face in rows:
                     # Base64 resim verisi oluştur
                     image_data = None
                     try:
@@ -2199,9 +2204,18 @@ class DatabaseTools:
                                 if face["DetectionDate"]
                                 else None
                             ),
-                            "gender": face["FaceGender"],
-                            "age": face["FaceAge"],
-                            "detection_score": float(face["DetectionScore"]),
+                            "gender": egm_milvus_map.get(face["MilvusID"], {}).get(
+                                "face_gender"
+                            ),
+                            "age": egm_milvus_map.get(face["MilvusID"], {}).get(
+                                "face_age"
+                            ),
+                            "detection_score": float(
+                                egm_milvus_map.get(face["MilvusID"], {}).get(
+                                    "detection_score"
+                                )
+                                or 0.0
+                            ),
                             "image_data": image_data,
                             "source": "egm",
                         }
@@ -2864,123 +2878,166 @@ class DatabaseTools:
     def findSimilarWhiteListFaces(
         self, face_embedding, threshold=0.6, algorithm="cosine", use_cuda=False
     ):
-        """Beyaz liste içinde benzer yüzleri bul (pgvector kullanarak).
-           Sonuçlar sadece temel bilgileri ve base64 resmi içerir.
+        """Beyaz liste içinde benzer yüzleri bul (Milvus kullanarak).
 
-        Args:
-            face_embedding: Aranacak yüz gömme vektörü (numpy array)
-            threshold: Benzerlik eşiği (0.0-1.0 arası)
-            # algorithm & use_cuda artık kullanılmıyor
-
-        Returns:
-            list: Bulunan benzer yüzlerin listesi
+        Vektör karşılaştırması artık PostgreSQL/pgvector yerine Milvus'ta
+        (WhiteListFacesMilvus) yapılır; meta veri ve görsel SQL'den okunur.
         """
-        conn = self.connect()
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        similar_faces = []
-        img_cursor = None
-        try:
-            embedding_str = str(
-                face_embedding.tolist()
-            )  # <<< YENİ: String formatına çevir
-            distance_threshold = 1 - threshold  # Mesafeye çevir
+        return self._find_similar_in_collection(
+            collection_name=WHITE_LIST_FACES_MILVUS_COLLECTION_NAME,
+            sql_table="WhiteListFaces",
+            image_column="FaceImage",
+            sql_columns=["FaceName", "FaceDescription"],
+            source="whitelist",
+            face_embedding=face_embedding,
+            threshold=threshold,
+        )
 
-            # 1. Adım: Benzer yüzleri ve temel bilgileri çek
-            # Kosinüs mesafesi hesapla, filtrele ve sırala.
-            # FaceDescription sütunu eklendi (varsa).
-            query = """
-            SELECT
-                "ID",
+    def findSimilarEgmFaces(
+        self, face_embedding, threshold=0.6, algorithm="cosine", use_cuda=False
+    ):
+        """EGM arananlar listesi içinde benzer yüzleri bul (Milvus kullanarak).
+
+        Vektör karşılaştırması Milvus'ta (EgmArananlarMilvus) yapılır;
+        meta veri ve görsel SQL'den okunur.
+        """
+        return self._find_similar_in_collection(
+            collection_name=EGM_ARANANLAR_MILVUS_COLLECTION_NAME,
+            sql_table="EgmArananlar",
+            image_column="ImageData",
+            sql_columns=[
                 "FaceName",
-                "FaceDescription", -- Eklendi
-                -- "Institution", -- Şemada yok
-                -- "Category",    -- Şemada yok
-                "FaceImageHash",
-                "DetectionScore",
-                "FaceGender",
-                "FaceAge",
-                "DetectionDate", -- InsertionDate yerine
-                "FaceEmbeddingData" <=> %s::vector AS distance, -- <<< YENİ: ::vector ve string parametre
-                1 - ("FaceEmbeddingData" <=> %s::vector) AS similarity -- <<< YENİ: ::vector ve string parametre
-            FROM "WhiteListFaces"
-            WHERE "FaceEmbeddingData" IS NOT NULL AND ("FaceEmbeddingData" <=> %s::vector) < %s -- <<< YENİ: ::vector ve string parametre
-            ORDER BY distance ASC
-            """
-            # Pass embedding_str for vector comparison
-            cursor.execute(
-                query, (embedding_str, embedding_str, embedding_str, distance_threshold)
-            )
-            similar_raw = cursor.fetchall()  # Önce benzerleri al
+                "Organizer",
+                "OrganizerLevel",
+                "BirthDateAndLocation",
+            ],
+            source="egm",
+            face_embedding=face_embedding,
+            threshold=threshold,
+        )
 
-            p_log(
-                f"pgvector (Whitelist): Eşik ({threshold} / mesafe < {distance_threshold:.4f}) üzerinde {len(similar_raw)} yüz bulundu."
+    def _find_similar_in_collection(
+        self,
+        collection_name,
+        sql_table,
+        image_column,
+        sql_columns,
+        source,
+        face_embedding,
+        threshold,
+    ):
+        """Ortak Milvus benzerlik araması + SQL meta veri/görsel birleştirme."""
+        similar_faces = []
+        try:
+            collection = self._get_cached_milvus_collection(collection_name)
+            if not collection:
+                p_error(
+                    f"Milvus collection '{collection_name}' bulunamadı/yüklenemedi."
+                )
+                return []
+
+            distance_threshold = 1.0 - float(threshold)
+            vector = np.asarray(face_embedding, dtype=np.float32)
+            norm = np.linalg.norm(vector)
+            if norm == 0:
+                p_warn("Sıfır normlu embedding, Milvus araması atlanıyor.")
+                return []
+            search_vector = (vector / norm).tolist()
+
+            limit = 100
+            milvus_results = collection.search(
+                data=[search_vector],
+                anns_field="face_embedding_data",
+                param={
+                    "metric_type": "COSINE",
+                    "params": {"ef": max(1200, int(limit * 1.2))},
+                },
+                limit=limit,
+                output_fields=["id"],
+                consistency_level="Strong",
             )
 
-            # 2. Adım: Resimleri çek ve sonuçları formatla
-            img_cursor = conn.cursor(
-                cursor_factory=DictCursor
-            )  # Resim için ayrı cursor
+            hits = {}  # milvus_id -> similarity
+            if milvus_results and milvus_results[0]:
+                for hit in milvus_results[0]:
+                    if hit.distance <= distance_threshold:
+                        hits[hit.id] = 1.0 - hit.distance
+
+            if not hits:
+                p_log(
+                    f"Milvus ({collection_name}): eşik üzerinde benzer yüz bulunamadı."
+                )
+                return []
+
+            # Milvus'tan yüz özniteliklerini topluca çek
+            entities = self._query_milvus_entities_by_ids(
+                collection_name,
+                list(hits.keys()),
+                ["face_gender", "face_age", "detection_score"],
+            )
+
+            # SQL'den meta veri + görseli MilvusID üzerinden çek
+            conn = self.connect()
+            cursor = conn.cursor(cursor_factory=DictCursor)
             try:
-                for face in similar_raw:
-                    face_id = face["ID"]
-                    image_data = None
+                meta_cols = ", ".join(f'"{c}"' for c in sql_columns)
+                placeholders = ",".join(["%s"] * len(hits))
+                cursor.execute(
+                    f'SELECT "ID", "MilvusID", {meta_cols}, "{image_column}" '
+                    f'FROM "{sql_table}" WHERE "MilvusID" IN ({placeholders})',
+                    tuple(hits.keys()),
+                )
+                sql_rows = {row["MilvusID"]: row for row in cursor.fetchall()}
+            finally:
+                self.releaseConnection(conn, cursor)
+
+            for milvus_id, similarity in hits.items():
+                row = sql_rows.get(milvus_id)
+                if not row:
+                    continue
+                entity = entities.get(milvus_id, {})
+                image_data = None
+                if row[image_column]:
                     try:
-                        # Şemaya göre sütun adı "FaceImage"
-                        img_query = (
-                            'SELECT "FaceImage" FROM "WhiteListFaces" WHERE "ID" = %s'
-                        )
-                        img_cursor.execute(img_query, (face_id,))
-                        image_result = img_cursor.fetchone()
-                        if image_result and image_result["FaceImage"]:
-                            # Whitelist resimleri sıkıştırılmış mı? Değilse direkt encode et.
-                            # Şimdilik sıkıştırılmadığını varsayıyoruz.
-                            image_data = base64.b64encode(
-                                image_result["FaceImage"]
-                            ).decode("utf-8")
+                        image_data = base64.b64encode(
+                            bytes(row[image_column])
+                        ).decode("utf-8")
                     except Exception as img_err:
                         p_error(
-                            f"Whitelist Resim verisi alınırken/encode edilirken hata (ID: {face_id}): {str(img_err)}"
+                            f"Görsel encode hatası ({source} ID {row['ID']}): {img_err}"
                         )
 
-                    face_dict = {
-                        "id": face_id,
-                        "similarity": float(face["similarity"]),
-                        "face_name": face["FaceName"],
-                        "face_description": face.get(
-                            "FaceDescription"
-                        ),  # .get() kullan
-                        # "institution": face.get("Institution"), # Yok
-                        # "category": face.get("Category"),       # Yok
-                        "gender": face["FaceGender"],
-                        "age": face["FaceAge"],
-                        "detection_score": (
-                            float(face["DetectionScore"])
-                            if face["DetectionScore"] is not None
-                            else 0.0
-                        ),
-                        "insertion_date": (
-                            face["DetectionDate"].isoformat()
-                            if face["DetectionDate"]
-                            else None
-                        ),  # Tarih sütunu adı düzeltildi
-                        "image_data": image_data,
-                        "source": "whitelist",
-                    }
-                    similar_faces.append(face_dict)
-            finally:
-                if img_cursor:
-                    img_cursor.close()
+                rd = dict(row)
+                face_dict = {
+                    "id": rd["ID"],
+                    "similarity": float(similarity),
+                    "face_name": rd.get("FaceName"),
+                    "face_description": rd.get("FaceDescription"),
+                    "organizer": rd.get("Organizer"),
+                    "organizer_level": rd.get("OrganizerLevel"),
+                    "birth_date_location": rd.get("BirthDateAndLocation"),
+                    "gender": entity.get("face_gender"),
+                    "age": entity.get("face_age"),
+                    "detection_score": float(entity.get("detection_score") or 0.0),
+                    "image_data": image_data,
+                    "source": source,
+                }
+                similar_faces.append(face_dict)
 
-            # Sıralama SQL'de yapıldı (distance ASC -> similarity DESC)
+            similar_faces.sort(key=lambda x: x["similarity"], reverse=True)
+            p_log(
+                f"Milvus ({collection_name}): {len(similar_faces)} benzer yüz döndürüldü."
+            )
             return similar_faces
 
-        except Exception as e:
-            p_error(f"findSimilarWhiteListFaces (pgvector) hata: {str(e)}")
+        except MilvusException as me:
+            p_error(f"MilvusException in _find_similar_in_collection ({collection_name}): {me}")
             traceback.print_exc()
             return []
-        finally:
-            self.releaseConnection(conn, cursor)  # Ana cursor ve bağlantıyı kapat
-            # img_cursor zaten yukarıda kapatıldı
+        except Exception as e:
+            p_error(f"Unexpected error in _find_similar_in_collection ({collection_name}): {e}")
+            traceback.print_exc()
+            return []
 
     def findSimilarFacesWithImages(
         self,
@@ -3471,6 +3528,46 @@ class DatabaseTools:
                 detail_cursor.close()
             if pg_conn:
                 pg_conn.close()
+
+    def _query_milvus_entities_by_ids(
+        self, collection_name: str, milvus_ids: list, output_fields: list
+    ) -> dict:
+        """
+        Milvus koleksiyonundan verilen Milvus ID'lerine (koleksiyonun 'id' alanı) göre
+        varlıkları topluca çeker ve {milvus_id: entity_dict} sözlüğü döndürür.
+        SQL tablolarındaki "MilvusID" / "MilvusRefID" değerleriyle eşleşir.
+        """
+        if not milvus_ids:
+            return {}
+        clean_ids = []
+        for mid in milvus_ids:
+            if mid is None:
+                continue
+            try:
+                clean_ids.append(int(mid))
+            except (TypeError, ValueError):
+                continue
+        if not clean_ids:
+            return {}
+        collection = self._get_cached_milvus_collection(collection_name)
+        if not collection:
+            return {}
+        try:
+            ids_expr = ",".join(str(i) for i in clean_ids)
+            entities = collection.query(
+                expr=f"id in [{ids_expr}]", output_fields=output_fields
+            )
+            return {entity["id"]: entity for entity in entities}
+        except MilvusException as me:
+            p_error(
+                f"MilvusException in _query_milvus_entities_by_ids ({collection_name}): {me}"
+            )
+            return {}
+        except Exception as e:
+            p_error(
+                f"Unexpected error in _query_milvus_entities_by_ids ({collection_name}): {e}"
+            )
+            return {}
 
     def get_milvus_face_attributes(self, collection_name: str, pg_face_id: int) -> dict:
         """

@@ -217,3 +217,58 @@ cd audit/pg && node run.mjs
 python3 audit/deps_check.py
 python3 audit/env_check.py
 ```
+
+---
+
+## ➕ Дополнение (второй ход): миграция роутов и поиска на Milvus
+
+Выполнены пункты **B** и **C** из основного аудита. Код переведён с несуществующих
+PostgreSQL-колонок на Milvus через существующие/новые хелперы.
+
+**Изменения в `lib/database_tools.py`:**
+- Добавлен общий хелпер `_query_milvus_entities_by_ids()` (чтение из Milvus по списку Milvus ID).
+- `searchEgmArananlar()` больше не читает `DetectionScore/FaceGender/FaceAge` из SQL — они
+  берутся из `EgmArananlarMilvus` по `MilvusID` (SELECT теперь только существующие колонки).
+- `findSimilarWhiteListFaces()` переписан: векторный поиск в `WhiteListFacesMilvus`, мета-данные
+  и картинка — из SQL по `MilvusID` (pgvector больше не используется).
+- Добавлен отсутствовавший метод `findSimilarEgmFaces()` (поиск в `EgmArananlarMilvus`) —
+  вызовы в `search_controller.py:183` и `web.py` теперь попадают в существующий метод.
+- Общий рабочий метод `_find_similar_in_collection()`.
+
+**Изменения в `app/routes/web.py`** (чтение атрибутов лица переведено на Milvus-хелперы):
+- `/fetch_domain_faces`, `/deep_insight/<id>`, `/face_similarity_analysis/<id>`,
+  `/download/relationship_details_report/...` — `FaceBox/FaceEmbeddingData/FaceGender/FaceAge/
+  DetectionScore` теперь читаются из `EyeOfWebFaceDataMilvus`
+  (`get_milvus_face_attributes` / `get_batch_milvus_face_attributes`), SQL отдаёт только
+  URL-компоненты и risk. Добавлена обработка facebox и как списка (Milvus), и как строки (legacy).
+
+**Проверка:** тот же исполнитель (166 операторов после правок): успешно **96**, ошибок схемы **17**.
+Из 17: 9 — loaders (группа A, оставлена осознанно), 3 — мёртвый код `get*DetailsWithLandmarks`,
+1 — dev-скрипт `verify_facebox_scale.py`, 4 — артефакты f-строк с динамическими именами таблиц
+(`migration_to_milvus.py`, `web.py:1324`, `_find_similar_in_collection`). **Ни одной точки B/C не осталось.**
+
+**Пункт 1 (прогон фото):** в песочнице невозможен — байты вложения не материализованы
+(`uploads/` отсутствует), а веса InsightFace лежат на `*.githubusercontent.com` (вне разрешённых
+хостов). Подготовлен `audit/face_pipeline_test.py` (детекция + сверка размерностей 512/212/4
+со схемой Milvus) для запуска в окружении с доступом к весам; локально выполнена только лёгкая
+Haar-детекция как sanity-check инструмента.
+
+**Пункт 3 (почему код не «найдёт соцсети человека»)** — см. раздел ниже.
+
+### Архитектура: почему платформа не ищет человека в интернете
+
+1. **Поиск = сопоставление с внутренними базами.** `find_similar_face_ids_in_milvus()`,
+   `findSimilarWhiteListFaces()`, `findSimilarEgmFaces()` ищут вектор только в локальных
+   коллекциях Milvus (сканированные сайты, whitelist, EGM). Никакого внешнего «кто это» нет:
+   если лица нет в ваших базах, совпадений не будет.
+2. **Краулеры — сбор по заданным URL, а не идентификация.** `facebook_*`, `twitter_*`,
+   `linkedin_*`, `google_*` собирают данные/изображения с указанных доменов и кладут их в
+   PostgreSQL+Milvus. Они не принимают «фото → найти профиль»; входа «лицо» у них нет.
+3. **Нет модуля face→profile.** Нет ни таблицы/коллекции, сопоставляющей лицо аккаунтам
+   соцсетей, ни внешнего reverse-image-API. Связка «эмбеддинг ↔ соцсеть» в модели данных
+   отсутствует (см. `sql/schema.sql` и `MILVUS_SCHEMA_GENERATOR.py`).
+4. **Юридический контур.** README/дисклеймер ограничивают применение академическими целями;
+   поиск реального человека по соцсетям вышел бы за рамки и KVKK/GDPR.
+
+Итог: «найти соцсети человека по фото» требует внешнего сервиса идентификации, которого в
+архитектуре нет и который не следует добавлять для частных лиц.
