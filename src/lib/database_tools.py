@@ -672,14 +672,15 @@ class DatabaseTools:
             # ------------------- Base Domain's ---------------------------
 
             baseDomain = str(baseDomain).lower()
+            # Şemada "BaseDomainID" tablosunun sütun adı "Domain"dir (bkz. sql/schema.sql).
             STATIC_SQL_COMMAND = (
-                """SELECT "ID" FROM "BaseDomainID" WHERE "BaseDomain" = %s"""
+                """SELECT "ID" FROM "BaseDomainID" WHERE "Domain" = %s"""
             )
             cursor.execute(STATIC_SQL_COMMAND, (baseDomain,))
             result_is = cursor.fetchall()
 
             if len(result_is) < 1:
-                STATIC_SQL_COMMAND = """INSERT INTO "BaseDomainID" ("BaseDomain") VALUES (%s) RETURNING "ID" """
+                STATIC_SQL_COMMAND = """INSERT INTO "BaseDomainID" ("Domain") VALUES (%s) RETURNING "ID" """
                 cursor.execute(STATIC_SQL_COMMAND, (baseDomain,))
                 result_is = cursor.fetchall()[0]["ID"]
                 conn.commit()
@@ -692,14 +693,15 @@ class DatabaseTools:
 
             if categortyNmae != None:
                 categortyNmae = str(categortyNmae).lower()
+                # Şemada "WebSiteCategoryID" tablosunun sütun adı "Category"dir (bkz. sql/schema.sql).
                 STATIC_SQL_COMMAND = (
-                    """SELECT "ID" FROM "WebSiteCategoryID" WHERE "CategoryName" = %s"""
+                    """SELECT "ID" FROM "WebSiteCategoryID" WHERE "Category" = %s"""
                 )
                 cursor.execute(STATIC_SQL_COMMAND, (categortyNmae,))
                 result_is = cursor.fetchall()
 
                 if len(result_is) < 1:
-                    STATIC_SQL_COMMAND = """INSERT INTO "WebSiteCategoryID" ("CategoryName") VALUES (%s) RETURNING "ID" """
+                    STATIC_SQL_COMMAND = """INSERT INTO "WebSiteCategoryID" ("Category") VALUES (%s) RETURNING "ID" """
                     cursor.execute(STATIC_SQL_COMMAND, (categortyNmae,))
                     result_is = cursor.fetchall()[0]["ID"]
                     conn.commit()
