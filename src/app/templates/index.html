@@ -77,7 +77,7 @@
 </div>
 
 <div class="row mt-3">
-    <div class="col-md-6 mb-4">
+    <div class="col-md-4 mb-4">
         <div class="card h-100 border-0 shadow-sm">
             <div class="card-body text-center p-4">
                 <div class="display-4 text-primary mb-3">
@@ -92,7 +92,7 @@
         </div>
     </div>
     
-    <div class="col-md-6 mb-4">
+    <div class="col-md-4 mb-4">
         <div class="card h-100 border-0 shadow-sm">
             <div class="card-body text-center p-4">
                 <div class="display-4 text-primary mb-3">
@@ -102,6 +102,20 @@
                 <p class="text-muted mb-4">İki farklı görsel arasında yüz benzerliği karşılaştırması yapın.</p>
                 <a href="{{ url_for('web.face_comparison') }}" class="btn btn-sm btn-primary">
                     Karşılaştırma Yap
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center p-4">
+                <div class="display-4 text-primary mb-3">
+                    <i class="fas fa-user-shield"></i>
+                </div>
+                <h3 class="h4 mb-3">Kişisel Yüz Galerisi</h3>
+                <p class="text-muted mb-4">Sadece kendi izinli referans örneklerinizle özel yüz benzerliği araması yapın.</p>
+                <a href="{{ url_for('web.face_gallery') }}" class="btn btn-sm btn-primary">
+                    Galeriyi Aç
                 </a>
             </div>
         </div>

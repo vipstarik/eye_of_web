@@ -16,6 +16,11 @@ from flask import (
     send_file,
 )
 from app.controllers.search_controller import SearchController
+from app.controllers.face_gallery_controller import (
+    FaceGalleryController,
+    MAX_PROFILES_PER_USER,
+    MAX_SAMPLES_PER_PROFILE,
+)
 from app.routes.auth import is_logged_in
 from functools import wraps
 from app import limiter
@@ -41,6 +46,7 @@ import json
 from lib.pdf_generator import generate_pdf_report  # PDF oluşturucu import edildi
 import math  # Import math for ceiling function
 from lib.database_tools import DatabaseTools  # DatabaseTools'u import edelim
+from lib.face_gallery import extract_single_face_embedding
 
 # from lib.database_tools import DEFAULT_THRESHOLDS # <<< YENİ: Eşik değerlerini import et <<< KALDIRILDI
 from lib.compress_tools import decompress_image
@@ -91,16 +97,15 @@ def validate_and_sanitize_image(file_storage):
             f"İzin verilmeyen dosya türü. İzin verilenler: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    # Dosya boyutu kontrolü
-    # file_storage.stream.seek(0, os.SEEK_END) # Bu satır dosyayı tüketebilir, dikkatli kullanılmalı
-    # file_size = file_storage.stream.tell()
-    # file_storage.stream.seek(0) # Stream'i başa sar
-    # current_app.logger.debug(f"Dosya boyutu kontrol ediliyor: {file_size} bytes")
-    # if file_size > MAX_IMAGE_SIZE_BYTES:
-    #     return None, f"Dosya boyutu çok büyük. Maksimum boyut: {MAX_IMAGE_SIZE_MB} MB."
-    # Not: Flask'ta request.content_length ile gelen dosya boyutu kontrol edilebilir veya
-    # config'den MAX_CONTENT_LENGTH ayarı kullanılabilir. Şimdilik bu kontrolü basitleştiriyoruz.
-    # Güvenlik için bu kontrolün etkinleştirilmesi önemlidir.
+    # Dosyayı Pillow'a vermeden önce gerçek stream boyutunu sınırla.
+    try:
+        file_storage.stream.seek(0, os.SEEK_END)
+        file_size = file_storage.stream.tell()
+        file_storage.stream.seek(0)
+        if file_size > MAX_IMAGE_SIZE_BYTES:
+            return None, f"Görsel boyutu çok büyük. En fazla {MAX_IMAGE_SIZE_MB} MB yükleyin."
+    except (AttributeError, OSError, ValueError):
+        return None, "Yüklenen görsel okunamadı."
 
     try:
         # Dosyayı PIL Image olarak aç (bu aynı zamanda temel bir doğrulama yapar)
@@ -591,6 +596,159 @@ def search_by_image():
     # YENİ: CUDA durumunu template'e gönder
     use_cuda_backend = current_app.config.get("USE_CUDA", False)
     return render_template("image_search.html", use_cuda=use_cuda_backend)
+
+
+@web_bp.route("/face-gallery", methods=["GET"])
+@login_required
+def face_gallery():
+    """Kullanıcının kendi izinli örneklerinden oluşan özel yüz galerisi."""
+    user_id = session.get("user_id")
+    try:
+        profiles = FaceGalleryController.list_profiles(user_id)
+    except Exception:
+        current_app.logger.exception("Kişisel yüz galerisi yüklenemedi.")
+        profiles = []
+        flash(
+            "Galeri veritabanı hazır değil. src/sql/users.sql şemasını uygulayın ve tekrar deneyin.",
+            "danger",
+        )
+
+    return render_template(
+        "face_gallery.html",
+        profiles=profiles,
+        results=None,
+        search_performed=False,
+        max_profiles=MAX_PROFILES_PER_USER,
+        max_samples=MAX_SAMPLES_PER_PROFILE,
+    )
+
+
+@web_bp.route("/face-gallery/enroll", methods=["POST"])
+@login_required
+@limiter.limit("10/hour")
+def face_gallery_enroll():
+    """Tek bir yüz örneğini kullanıcının özel galerisine ekler."""
+    if request.form.get("consent") != "yes":
+        flash(
+            "Devam etmek için fotoğraftaki kişinin siz olduğunuzu veya açık izniniz bulunduğunu onaylayın.",
+            "warning",
+        )
+        return redirect(url_for("web.face_gallery"))
+
+    label = (request.form.get("label") or "").strip()
+    if not label or len(label) > 80:
+        flash("Profil adı 1–80 karakter arasında olmalı.", "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    uploaded_file = request.files.get("image")
+    sanitized_img, message = validate_and_sanitize_image(uploaded_file)
+    if sanitized_img is None:
+        flash(message, "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    face_analyzer = getattr(g, "face_app", None)
+    if face_analyzer is None:
+        flash("Yüz analiz modeli başlatılmamış. Uygulama yöneticisine başvurun.", "danger")
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        image_rgb = np.asarray(sanitized_img.convert("RGB"), dtype=np.uint8)
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        embedding, _detection_score = extract_single_face_embedding(
+            image_bgr, face_analyzer
+        )
+        sample_count = FaceGalleryController.add_sample(
+            session.get("user_id"), label, embedding
+        )
+        flash(
+            f"«{label}» profiline örnek eklendi. Bu profilde {sample_count} / {MAX_SAMPLES_PER_PROFILE} örnek var.",
+            "success",
+        )
+    except ValueError as error:
+        flash(str(error), "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel galeriye yüz örneği eklenemedi.")
+        flash("Örnek kaydedilemedi. Galeri şemasını ve veritabanı bağlantısını kontrol edin.", "danger")
+
+    return redirect(url_for("web.face_gallery"))
+
+
+@web_bp.route("/face-gallery/search", methods=["POST"])
+@login_required
+@limiter.limit("20/hour")
+def face_gallery_search():
+    """Uploaded face'i sadece oturum açan kullanıcının galerisinde karşılaştırır."""
+    if request.form.get("authorized_search") != "yes":
+        flash(
+            "Karşılaştırma için bu fotoğrafı kullanma yetkiniz olduğunu onaylayın.",
+            "warning",
+        )
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        threshold = float(request.form.get("threshold", "0.60"))
+        if not 0.55 <= threshold <= 0.90:
+            raise ValueError
+    except (TypeError, ValueError):
+        flash("Benzerlik eşiği 0.55 ile 0.90 arasında olmalı.", "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    uploaded_file = request.files.get("image")
+    sanitized_img, message = validate_and_sanitize_image(uploaded_file)
+    if sanitized_img is None:
+        flash(message, "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    face_analyzer = getattr(g, "face_app", None)
+    if face_analyzer is None:
+        flash("Yüz analiz modeli başlatılmamış. Uygulama yöneticisine başvurun.", "danger")
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        image_rgb = np.asarray(sanitized_img.convert("RGB"), dtype=np.uint8)
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        embedding, _detection_score = extract_single_face_embedding(
+            image_bgr, face_analyzer
+        )
+        profiles = FaceGalleryController.list_profiles(session.get("user_id"))
+        results = FaceGalleryController.search(
+            session.get("user_id"), embedding, threshold=threshold, limit=10
+        )
+        return render_template(
+            "face_gallery.html",
+            profiles=profiles,
+            results=results,
+            search_performed=True,
+            search_threshold=threshold,
+            max_profiles=MAX_PROFILES_PER_USER,
+            max_samples=MAX_SAMPLES_PER_PROFILE,
+        )
+    except ValueError as error:
+        flash(str(error), "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel yüz galerisi aranamadı.")
+        flash("Arama yapılamadı. Galeri şemasını ve veritabanı bağlantısını kontrol edin.", "danger")
+
+    return redirect(url_for("web.face_gallery"))
+
+
+@web_bp.route("/face-gallery/<int:profile_id>/delete", methods=["POST"])
+@login_required
+@limiter.limit("20/hour")
+def face_gallery_delete(profile_id):
+    """Profili ve ilişkili tüm embedding örneklerini kalıcı olarak siler."""
+    try:
+        deleted = FaceGalleryController.delete_profile(
+            session.get("user_id"), profile_id
+        )
+        if deleted:
+            flash("Profil ve kayıtlı örnekleri silindi.", "success")
+        else:
+            flash("Profil bulunamadı veya silme yetkiniz yok.", "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel galeri profili silinemedi.")
+        flash("Profil silinemedi. Veritabanı bağlantısını kontrol edin.", "danger")
+    return redirect(url_for("web.face_gallery"))
 
 
 # Yeni Rota: Görsel Arama Sonuçları için PDF İndirme
