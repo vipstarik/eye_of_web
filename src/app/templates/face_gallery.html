@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}Kişisel Yüz Galerisi{% endblock %}
+
+{% block styles %}
+<style>
+    .gallery-header {
+        background: linear-gradient(135deg, #10243a, #145b72);
+        color: #fff;
+        border-radius: 1rem;
+        padding: 2rem;
+    }
+    .gallery-icon {
+        width: 3rem;
+        height: 3rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,.14);
+        border-radius: .9rem;
+        font-size: 1.4rem;
+    }
+    .upload-box {
+        border: 1px dashed #b7c3d0;
+        background: #f8fafc;
+        border-radius: .75rem;
+        padding: 1rem;
+    }
+    .similarity-score {
+        min-width: 5rem;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+    .privacy-note {
+        border-left: 4px solid #0d6efd;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container py-2">
+    <div class="gallery-header mb-4">
+        <div class="d-flex align-items-start gap-3">
+            <div class="gallery-icon"><i class="fas fa-user-shield"></i></div>
+            <div>
+                <h1 class="h2 mb-2">Kişisel yüz galerisi</h1>
+                <p class="mb-0 text-white-50">
+                    İzinli referans fotoğraflarını ekleyin; arama yalnızca sizin galerinizde yapılır.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="alert alert-info privacy-note" role="note">
+        <strong>Model eğitimi değil, örnek kaydı:</strong> InsightFace önceden eğitilmiş modeli kullanılır.
+        Her fotoğraf için 512 boyutlu yüz şablonu (embedding) çıkarılır; orijinal fotoğraf bu galeriye
+        kaydedilmez. Arama; web tarayıcıları, herkese açık yüz indeksi, beyaz liste ve EGM koleksiyonlarıyla
+        bağlantı kurmaz. Benzerlik skoru kimliği kanıtlamaz; yanlış eşleşme mümkündür.
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-white">
+                    <h2 class="h5 mb-0"><i class="fas fa-user-plus text-primary me-2"></i>Örnek yüz ekle</h2>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small">
+                        Net, iyi aydınlatılmış ve yalnızca bir yüz içeren fotoğraf kullanın.
+                        Aynı kişi için farklı açılardan en fazla {{ max_samples }} örnek eklenebilir.
+                        En fazla {{ max_profiles }} profil oluşturabilirsiniz.
+                    </p>
+                    <form method="post" action="{{ url_for('web.face_gallery_enroll') }}" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="mb-3">
+                            <label class="form-label" for="enroll-label">Profil adı</label>
+                            <input class="form-control" type="text" name="label" id="enroll-label"
+                                   maxlength="80" autocomplete="off" required
+                                   placeholder="Ör. Kendim / izinli test profili">
+                            <div class="form-text">Aynı adla eklenen fotoğraflar aynı profile bağlanır.</div>
+                        </div>
+                        <div class="mb-3 upload-box">
+                            <label class="form-label" for="enroll-image">Referans fotoğrafı</label>
+                            <input class="form-control" type="file" name="image" id="enroll-image"
+                                   accept="image/png,image/jpeg,image/webp,image/gif" required>
+                            <div class="form-text">PNG, JPG, JPEG, WEBP veya GIF · en fazla 5 MB</div>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="enroll-consent"
+                                   name="consent" value="yes" required>
+                            <label class="form-check-label small" for="enroll-consent">
+                                Fotoğraftaki kişi benim veya bu biyometrik karşılaştırma için açık izni var;
+                                fotoğrafı işleme ve şablonunu bu özel galeride saklama yetkim bulunuyor.
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-plus me-1"></i> Örneği kaydet
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-white">
+                    <h2 class="h5 mb-0"><i class="fas fa-search text-success me-2"></i>Galeride karşılaştır</h2>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small">
+                        Yüklenen sorgu fotoğrafı yalnızca karşılaştırma sırasında kullanılır ve kaydedilmez.
+                        Sonuçlar yalnızca bu hesaba ait kayıtlı örneklerden gelir.
+                    </p>
+                    <form method="post" action="{{ url_for('web.face_gallery_search') }}" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="mb-3 upload-box">
+                            <label class="form-label" for="search-image">Sorgu fotoğrafı</label>
+                            <input class="form-control" type="file" name="image" id="search-image"
+                                   accept="image/png,image/jpeg,image/webp,image/gif" required>
+                            <div class="form-text">Fotoğrafta tam olarak bir yüz olmalı.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="gallery-threshold" class="form-label">
+                                Benzerlik eşiği: <span id="threshold-value">{{ search_threshold|default(0.60)|round(2) }}</span>
+                            </label>
+                            <input class="form-range" type="range" id="gallery-threshold" name="threshold"
+                                   min="0.55" max="0.90" step="0.01"
+                                   value="{{ search_threshold|default(0.60) }}">
+                            <div class="d-flex justify-content-between text-muted small">
+                                <span>Daha fazla olası eşleşme</span><span>Daha katı eşik</span>
+                            </div>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="search-authorized"
+                                   name="authorized_search" value="yes" required>
+                            <label class="form-check-label small" for="search-authorized">
+                                Bu fotoğrafı bu galeride karşılaştırmaya yetkim olduğunu onaylıyorum.
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-success">
+                            <i class="fas fa-fingerprint me-1"></i> Yalnızca galerimde ara
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if search_performed %}
+    <section class="card shadow-sm mt-4" aria-live="polite">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">Olası eşleşmeler</h2>
+            <span class="badge text-bg-secondary">Eşik {{ (search_threshold * 100)|round|int }}%</span>
+        </div>
+        <div class="card-body">
+            {% if results %}
+                <p class="small text-muted">
+                    Sonuçları bir insan gözden geçirmelidir. Skor, kişinin kimliğinin doğrulandığı anlamına gelmez.
+                </p>
+                <div class="list-group">
+                    {% for result in results %}
+                    <div class="list-group-item d-flex flex-column flex-sm-row gap-2 justify-content-between align-items-sm-center">
+                        <div>
+                            <div class="fw-semibold">{{ result.label }}</div>
+                            <div class="small text-muted">{{ result.sample_count }} referans örneği</div>
+                        </div>
+                        <span class="badge text-bg-primary similarity-score">
+                            {{ (result.similarity * 100)|round|int }}% benzerlik
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="alert alert-secondary mb-0">
+                    Bu eşik değerinde galerinizde eşleşme bulunamadı. Bu, aynı kişi olmadığına dair kesin kanıt değildir.
+                </div>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="card shadow-sm mt-4">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">Kayıtlı profiller</h2>
+            <span class="badge text-bg-light">{{ profiles|length }} / {{ max_profiles }}</span>
+        </div>
+        <div class="card-body p-0">
+            {% if profiles %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr><th scope="col">Profil</th><th scope="col">Örnek</th><th scope="col">Oluşturuldu</th><th scope="col" class="text-end">İşlem</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for profile in profiles %}
+                        <tr>
+                            <td class="fw-semibold">{{ profile.label }}</td>
+                            <td>{{ profile.sample_count }} / {{ max_samples }}</td>
+                            <td class="text-muted small">{{ profile.created_at.strftime('%Y-%m-%d') if profile.created_at else '—' }}</td>
+                            <td class="text-end">
+                                <form method="post" action="{{ url_for('web.face_gallery_delete', profile_id=profile.id) }}"
+                                      onsubmit="return confirm('Bu profil ve tüm yüz şablonları kalıcı olarak silinsin mi?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                                        <i class="fas fa-trash-alt me-1"></i> Sil
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="p-4 text-center text-muted">
+                <i class="fas fa-address-book fa-2x mb-2"></i>
+                <p class="mb-0">Henüz profil yok. İzinli bir referans fotoğrafı ekleyerek başlayın.</p>
+            </div>
+            {% endif %}
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const galleryThreshold = document.getElementById('gallery-threshold');
+    const thresholdValue = document.getElementById('threshold-value');
+    if (galleryThreshold && thresholdValue) {
+        galleryThreshold.addEventListener('input', () => {
+            thresholdValue.textContent = Number(galleryThreshold.value).toFixed(2);
+        });
+    }
+</script>
+{% endblock %}

@@ -1,6 +1,6 @@
 -- PostgreSQL için kullanıcı tablosu şeması
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,                                      -- Benzersiz kullanıcı kimliği, otomatik artan
     username VARCHAR(255) UNIQUE NOT NULL,                      -- Kullanıcı adı, benzersiz ve boş olamaz
     password VARCHAR(255) NOT NULL,                             -- Şifrelenmiş kullanıcı parolası, boş olamaz
@@ -24,9 +24,9 @@ CREATE TABLE users (
 );
 
 -- Kullanıcı adı üzerinde hızlı arama için indeks (isteğe bağlı ama önerilir)
-CREATE INDEX idx_users_username ON users (username);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 -- E-posta üzerinde hızlı arama için indeks (isteğe bağlı ama önerilir)
-CREATE INDEX idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 
 -- Örnek Admin Kullanıcısı (Parola Flask tarafında hash'lenip buraya eklenecek)
 -- INSERT INTO users (username, password, name, is_active, is_admin) 
@@ -48,3 +48,29 @@ COMMENT ON COLUMN users.demo_end IS 'Demo hesabının bitiş tarihi ve saati.';
 COMMENT ON COLUMN users.subscription_start_date IS 'Kullanıcının aboneliğinin başlangıç tarihi ve saati.';
 COMMENT ON COLUMN users.subscription_end_date IS 'Kullanıcının aboneliğinin bitiş tarihi ve saati.';
 COMMENT ON COLUMN users.last_login IS 'Kullanıcının sisteme son giriş yaptığı tarih ve saat.';
+
+-- Private, consent-based face gallery. This is intentionally separate from all
+-- crawler, public-web, whitelist, and EGM face collections.
+CREATE TABLE IF NOT EXISTS face_gallery_profiles (
+    id BIGSERIAL PRIMARY KEY,
+    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label VARCHAR(80) NOT NULL CHECK (char_length(trim(label)) BETWEEN 1 AND 80),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (owner_user_id, label)
+);
+CREATE INDEX IF NOT EXISTS face_gallery_profiles_owner_idx
+    ON face_gallery_profiles (owner_user_id);
+
+CREATE TABLE IF NOT EXISTS face_gallery_samples (
+    id BIGSERIAL PRIMARY KEY,
+    profile_id BIGINT NOT NULL REFERENCES face_gallery_profiles(id) ON DELETE CASCADE,
+    embedding BYTEA NOT NULL CHECK (octet_length(embedding) = 2048),
+    consent_confirmed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS face_gallery_samples_profile_idx
+    ON face_gallery_samples (profile_id);
+
+COMMENT ON TABLE face_gallery_profiles IS
+    'Per-user consent-based reference profiles for a private face-similarity gallery.';
+COMMENT ON TABLE face_gallery_samples IS
+    'Normalized 512-dimensional float32 face embeddings; uploaded source images are not retained.';

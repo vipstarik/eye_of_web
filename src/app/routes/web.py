@@ -16,6 +16,11 @@ from flask import (
     send_file,
 )
 from app.controllers.search_controller import SearchController
+from app.controllers.face_gallery_controller import (
+    FaceGalleryController,
+    MAX_PROFILES_PER_USER,
+    MAX_SAMPLES_PER_PROFILE,
+)
 from app.routes.auth import is_logged_in
 from functools import wraps
 from app import limiter
@@ -41,6 +46,7 @@ import json
 from lib.pdf_generator import generate_pdf_report  # PDF oluşturucu import edildi
 import math  # Import math for ceiling function
 from lib.database_tools import DatabaseTools  # DatabaseTools'u import edelim
+from lib.face_gallery import extract_single_face_embedding
 
 # from lib.database_tools import DEFAULT_THRESHOLDS # <<< YENİ: Eşik değerlerini import et <<< KALDIRILDI
 from lib.compress_tools import decompress_image
@@ -91,16 +97,15 @@ def validate_and_sanitize_image(file_storage):
             f"İzin verilmeyen dosya türü. İzin verilenler: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    # Dosya boyutu kontrolü
-    # file_storage.stream.seek(0, os.SEEK_END) # Bu satır dosyayı tüketebilir, dikkatli kullanılmalı
-    # file_size = file_storage.stream.tell()
-    # file_storage.stream.seek(0) # Stream'i başa sar
-    # current_app.logger.debug(f"Dosya boyutu kontrol ediliyor: {file_size} bytes")
-    # if file_size > MAX_IMAGE_SIZE_BYTES:
-    #     return None, f"Dosya boyutu çok büyük. Maksimum boyut: {MAX_IMAGE_SIZE_MB} MB."
-    # Not: Flask'ta request.content_length ile gelen dosya boyutu kontrol edilebilir veya
-    # config'den MAX_CONTENT_LENGTH ayarı kullanılabilir. Şimdilik bu kontrolü basitleştiriyoruz.
-    # Güvenlik için bu kontrolün etkinleştirilmesi önemlidir.
+    # Dosyayı Pillow'a vermeden önce gerçek stream boyutunu sınırla.
+    try:
+        file_storage.stream.seek(0, os.SEEK_END)
+        file_size = file_storage.stream.tell()
+        file_storage.stream.seek(0)
+        if file_size > MAX_IMAGE_SIZE_BYTES:
+            return None, f"Görsel boyutu çok büyük. En fazla {MAX_IMAGE_SIZE_MB} MB yükleyin."
+    except (AttributeError, OSError, ValueError):
+        return None, "Yüklenen görsel okunamadı."
 
     try:
         # Dosyayı PIL Image olarak aç (bu aynı zamanda temel bir doğrulama yapar)
@@ -591,6 +596,159 @@ def search_by_image():
     # YENİ: CUDA durumunu template'e gönder
     use_cuda_backend = current_app.config.get("USE_CUDA", False)
     return render_template("image_search.html", use_cuda=use_cuda_backend)
+
+
+@web_bp.route("/face-gallery", methods=["GET"])
+@login_required
+def face_gallery():
+    """Kullanıcının kendi izinli örneklerinden oluşan özel yüz galerisi."""
+    user_id = session.get("user_id")
+    try:
+        profiles = FaceGalleryController.list_profiles(user_id)
+    except Exception:
+        current_app.logger.exception("Kişisel yüz galerisi yüklenemedi.")
+        profiles = []
+        flash(
+            "Galeri veritabanı hazır değil. src/sql/users.sql şemasını uygulayın ve tekrar deneyin.",
+            "danger",
+        )
+
+    return render_template(
+        "face_gallery.html",
+        profiles=profiles,
+        results=None,
+        search_performed=False,
+        max_profiles=MAX_PROFILES_PER_USER,
+        max_samples=MAX_SAMPLES_PER_PROFILE,
+    )
+
+
+@web_bp.route("/face-gallery/enroll", methods=["POST"])
+@login_required
+@limiter.limit("10/hour")
+def face_gallery_enroll():
+    """Tek bir yüz örneğini kullanıcının özel galerisine ekler."""
+    if request.form.get("consent") != "yes":
+        flash(
+            "Devam etmek için fotoğraftaki kişinin siz olduğunuzu veya açık izniniz bulunduğunu onaylayın.",
+            "warning",
+        )
+        return redirect(url_for("web.face_gallery"))
+
+    label = (request.form.get("label") or "").strip()
+    if not label or len(label) > 80:
+        flash("Profil adı 1–80 karakter arasında olmalı.", "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    uploaded_file = request.files.get("image")
+    sanitized_img, message = validate_and_sanitize_image(uploaded_file)
+    if sanitized_img is None:
+        flash(message, "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    face_analyzer = getattr(g, "face_app", None)
+    if face_analyzer is None:
+        flash("Yüz analiz modeli başlatılmamış. Uygulama yöneticisine başvurun.", "danger")
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        image_rgb = np.asarray(sanitized_img.convert("RGB"), dtype=np.uint8)
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        embedding, _detection_score = extract_single_face_embedding(
+            image_bgr, face_analyzer
+        )
+        sample_count = FaceGalleryController.add_sample(
+            session.get("user_id"), label, embedding
+        )
+        flash(
+            f"«{label}» profiline örnek eklendi. Bu profilde {sample_count} / {MAX_SAMPLES_PER_PROFILE} örnek var.",
+            "success",
+        )
+    except ValueError as error:
+        flash(str(error), "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel galeriye yüz örneği eklenemedi.")
+        flash("Örnek kaydedilemedi. Galeri şemasını ve veritabanı bağlantısını kontrol edin.", "danger")
+
+    return redirect(url_for("web.face_gallery"))
+
+
+@web_bp.route("/face-gallery/search", methods=["POST"])
+@login_required
+@limiter.limit("20/hour")
+def face_gallery_search():
+    """Uploaded face'i sadece oturum açan kullanıcının galerisinde karşılaştırır."""
+    if request.form.get("authorized_search") != "yes":
+        flash(
+            "Karşılaştırma için bu fotoğrafı kullanma yetkiniz olduğunu onaylayın.",
+            "warning",
+        )
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        threshold = float(request.form.get("threshold", "0.60"))
+        if not 0.55 <= threshold <= 0.90:
+            raise ValueError
+    except (TypeError, ValueError):
+        flash("Benzerlik eşiği 0.55 ile 0.90 arasında olmalı.", "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    uploaded_file = request.files.get("image")
+    sanitized_img, message = validate_and_sanitize_image(uploaded_file)
+    if sanitized_img is None:
+        flash(message, "warning")
+        return redirect(url_for("web.face_gallery"))
+
+    face_analyzer = getattr(g, "face_app", None)
+    if face_analyzer is None:
+        flash("Yüz analiz modeli başlatılmamış. Uygulama yöneticisine başvurun.", "danger")
+        return redirect(url_for("web.face_gallery"))
+
+    try:
+        image_rgb = np.asarray(sanitized_img.convert("RGB"), dtype=np.uint8)
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        embedding, _detection_score = extract_single_face_embedding(
+            image_bgr, face_analyzer
+        )
+        profiles = FaceGalleryController.list_profiles(session.get("user_id"))
+        results = FaceGalleryController.search(
+            session.get("user_id"), embedding, threshold=threshold, limit=10
+        )
+        return render_template(
+            "face_gallery.html",
+            profiles=profiles,
+            results=results,
+            search_performed=True,
+            search_threshold=threshold,
+            max_profiles=MAX_PROFILES_PER_USER,
+            max_samples=MAX_SAMPLES_PER_PROFILE,
+        )
+    except ValueError as error:
+        flash(str(error), "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel yüz galerisi aranamadı.")
+        flash("Arama yapılamadı. Galeri şemasını ve veritabanı bağlantısını kontrol edin.", "danger")
+
+    return redirect(url_for("web.face_gallery"))
+
+
+@web_bp.route("/face-gallery/<int:profile_id>/delete", methods=["POST"])
+@login_required
+@limiter.limit("20/hour")
+def face_gallery_delete(profile_id):
+    """Profili ve ilişkili tüm embedding örneklerini kalıcı olarak siler."""
+    try:
+        deleted = FaceGalleryController.delete_profile(
+            session.get("user_id"), profile_id
+        )
+        if deleted:
+            flash("Profil ve kayıtlı örnekleri silindi.", "success")
+        else:
+            flash("Profil bulunamadı veya silme yetkiniz yok.", "warning")
+    except Exception:
+        current_app.logger.exception("Kişisel galeri profili silinemedi.")
+        flash("Profil silinemedi. Veritabanı bağlantısını kontrol edin.", "danger")
+    return redirect(url_for("web.face_gallery"))
 
 
 # Yeni Rota: Görsel Arama Sonuçları için PDF İndirme
@@ -2341,9 +2499,9 @@ def fetch_domain_faces():
         conn = g.db_tools.connect()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-        # 1. Adım: EyeOfWebFaceID tablosundan face box verilerini al
+        # 1. Adım: EyeOfWebFaceID tablosundan kaydın varlığını doğrula
         face_query = """
-        SELECT f."ID" as face_id, f."FaceBox" as facebox
+        SELECT f."ID" as face_id
         FROM "EyeOfWebFaceID" f
         WHERE f."ID" = %s
         """
@@ -2361,8 +2519,11 @@ def fetch_domain_faces():
                 }
             )
 
-        # Face Box verisi
-        facebox = face_result["facebox"]
+        # Face Box verisi artık Milvus'ta (EyeOfWebFaceDataMilvus)
+        milvus_attrs = g.db_tools.get_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, face_id_int
+        )
+        facebox = milvus_attrs.get("face_box") if milvus_attrs else None
 
         # 2. Adım: ImageBasedMain tablosundan face_id'yi içeren kayıtları bul
         # Tüm URL bileşenlerini alacağız
@@ -2426,10 +2587,22 @@ def fetch_domain_faces():
                 }
             )
 
-        # Facebox verisi
-        facebox_data = np.array(
-            ast.literal_eval(facebox), dtype=np.float32
-        ).tolist()  # JSON için listeye çevir
+        # Facebox verisi (Milvus liste döndürür; eski string formatı için geriye uyumluluk)
+        if facebox is None:
+            g.db_tools.releaseConnection(conn, cursor)
+            return jsonify(
+                {
+                    "success": False,
+                    "message": f"Face ID için Milvus'ta facebox bulunamadı: {face_id}",
+                    "faces": [],
+                }
+            )
+        if isinstance(facebox, str):
+            facebox_data = np.array(
+                ast.literal_eval(facebox), dtype=np.float32
+            ).tolist()
+        else:
+            facebox_data = [float(v) for v in facebox]
 
         # Sonuç
         face_data = {
@@ -2521,19 +2694,16 @@ def deep_insight(face_id):
                     # Bu yüzün detaylarını sakla (eğer henüz yapılmadıysa)
                     if other_face_id not in face_co_occurrence_details:
                         # Bu yüzün bulunduğu görsellerden birini bul
+                        # (yüz öznitelikleri artık Milvus'ta, SQL sadece URL/risk verir)
                         face_query = """
                         SELECT 
                             f."ID" as face_id,
-                            f."FaceGender" as gender,
-                            f."FaceAge" as age,
-                            f."DetectionScore" as score,
                             m."RiskLevel" as risk_level,
                             m."ImageID" as image_id,
                             m."ImageProtocol" as protocol,
                             bd."Domain" as domain,
                             iup."Path" as path,
-                            iue."Etc" as url_etc,
-                            f."FaceBox" as facebox
+                            iue."Etc" as url_etc
                         FROM "EyeOfWebFaceID" f
                         JOIN "ImageBasedMain" m ON f."ID" = ANY(m."FaceID")
                         JOIN "BaseDomainID" bd ON m."BaseDomainID" = bd."ID"
@@ -2555,23 +2725,34 @@ def deep_insight(face_id):
                                 face_result["url_etc"],
                             )
 
+                            # Yüz öznitelikleri Milvus'tan (EyeOfWebFaceDataMilvus)
+                            milvus_attrs = (
+                                g.db_tools.get_milvus_face_attributes(
+                                    EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                                    other_face_id,
+                                )
+                                or {}
+                            )
+                            raw_facebox = milvus_attrs.get("face_box")
+                            if isinstance(raw_facebox, str):
+                                facebox_data = np.array(
+                                    ast.literal_eval(raw_facebox), dtype=np.float32
+                                ).tolist()
+                            elif raw_facebox is not None:
+                                facebox_data = [float(v) for v in raw_facebox]
+                            else:
+                                facebox_data = None
+
                             # Yüz detaylarını sakla
                             face_co_occurrence_details[other_face_id] = {
                                 "face_id": other_face_id,
-                                "gender": face_result["gender"],
-                                "age": face_result["age"],
-                                "score": face_result["score"],
+                                "gender": milvus_attrs.get("face_gender"),
+                                "age": milvus_attrs.get("face_age"),
+                                "score": milvus_attrs.get("detection_score"),
                                 "risk_level": face_result["risk_level"],
                                 "original_image_url": image_url,
                                 "domain": face_result["domain"],
-                                "facebox": (
-                                    np.array(
-                                        ast.literal_eval(face_result["facebox"]),
-                                        dtype=np.float32,
-                                    ).tolist()
-                                    if face_result["facebox"]
-                                    else None
-                                ),
+                                "facebox": facebox_data,
                             }
 
         # En sık görülen 10 yüzü al
@@ -2698,42 +2879,36 @@ def face_similarity_analysis(face_id):
         face_embeddings = {}
         face_details_cache = {}
         if all_face_ids_in_related_images:
-            query_placeholders = ",".join(["%s"] * len(all_face_ids_in_related_images))
-            details_query = f"""
-            SELECT f."ID", f."FaceEmbeddingData", f."FaceGender", f."FaceAge"
-            FROM "EyeOfWebFaceID" f WHERE f."ID" IN ({query_placeholders})
-            """
-            cursor.execute(details_query, list(all_face_ids_in_related_images))
-            face_data_batch = cursor.fetchall()
-
-            for face_data in face_data_batch:
-                face_id = face_data["ID"]
-                if face_data["FaceEmbeddingData"]:
-                    try:
-                        embedding = np.array(
-                            ast.literal_eval(face_data["FaceEmbeddingData"]),
-                            dtype=np.float32,
-                        )
-                        if embedding.size == 512:
-                            face_embeddings[face_id] = embedding
-                            face_details_cache[face_id] = {
-                                "id": face_id,
-                                "gender": (
-                                    "Erkek" if face_data["FaceGender"] else "Kadın"
-                                ),
-                                "age": face_data["FaceAge"],
-                            }
-                        else:
-                            current_app.logger.warning(
-                                f"Yüz ID {face_id} için beklenmeyen embedding boyutu: {embedding.size}"
-                            )
-                    except Exception as emb_err:
-                        current_app.logger.error(
-                            f"Yüz ID {face_id} için embedding parse hatası: {emb_err}"
-                        )
-                else:
+            # Embedding ve temel öznitelikler artık Milvus'ta (EyeOfWebFaceDataMilvus)
+            batch_attrs = g.db_tools.get_batch_milvus_face_attributes(
+                EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                list(all_face_ids_in_related_images),
+            )
+            for face_id, attrs in batch_attrs.items():
+                emb = attrs.get("face_embedding_data")
+                if emb is None:
                     current_app.logger.warning(
                         f"Yüz ID {face_id} için embedding verisi bulunamadı."
+                    )
+                    continue
+                try:
+                    embedding = np.array(emb, dtype=np.float32)
+                    if embedding.size == 512:
+                        face_embeddings[face_id] = embedding
+                        face_details_cache[face_id] = {
+                            "id": face_id,
+                            "gender": (
+                                "Erkek" if attrs.get("face_gender") else "Kadın"
+                            ),
+                            "age": attrs.get("face_age"),
+                        }
+                    else:
+                        current_app.logger.warning(
+                            f"Yüz ID {face_id} için beklenmeyen embedding boyutu: {embedding.size}"
+                        )
+                except Exception as emb_err:
+                    current_app.logger.error(
+                        f"Yüz ID {face_id} için embedding parse hatası: {emb_err}"
                     )
 
         # 4. İlişkili yüz çiftlerinin benzerliğini hesapla
@@ -2792,11 +2967,15 @@ def face_similarity_analysis(face_id):
         # Toplu olarak ek detayları (URL bileşenleri ve FaceBox) al
         face_display_details = {}
         if face_ids_to_fetch_details_for:
+            # FaceBox artık Milvus'ta — topluca çek (SQL yalnızca URL bileşenlerini verir)
+            facebox_batch = g.db_tools.get_batch_milvus_face_attributes(
+                EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                list(face_ids_to_fetch_details_for),
+            )
             query_placeholders = ",".join(["%s"] * len(face_ids_to_fetch_details_for))
             details_query = f"""
                 SELECT DISTINCT ON (f."ID") -- Her yüz için sadece bir satır al (ilk bulunan)
                     f."ID" as face_id,
-                    f."FaceBox",
                     m."ImageProtocol",
                     bd_img."Domain" as image_domain,
                     im_path."Path" as image_path,
@@ -2820,13 +2999,15 @@ def face_similarity_analysis(face_id):
                     row["image_path"],
                     row["image_etc"],
                 )
-                facebox = (
-                    np.array(
-                        ast.literal_eval(row["FaceBox"]), dtype=np.float32
+                raw_facebox = facebox_batch.get(face_id, {}).get("face_box")
+                if isinstance(raw_facebox, str):
+                    facebox = np.array(
+                        ast.literal_eval(raw_facebox), dtype=np.float32
                     ).tolist()
-                    if row["FaceBox"]
-                    else None
-                )
+                elif raw_facebox is not None:
+                    facebox = [float(v) for v in raw_facebox]
+                else:
+                    facebox = None
                 face_display_details[face_id] = {
                     "original_image_url": original_url,
                     "facebox": facebox,
@@ -4766,37 +4947,37 @@ def download_relationship_details_report(target_face_id, face_id):
 
         # Yüz gruplarını yeniden oluştur (veya session'dan al, şimdilik yeniden oluşturalım)
         # Bu kısım /face_relationship_details içindeki mantıkla aynı olmalı
-        # 1. Embedding'leri al
-        cursor.execute(
-            'SELECT "ID", "FaceEmbeddingData" FROM "EyeOfWebFaceID" WHERE "ID" IN (%s, %s)',
-            (target_face_id, face_id),
+        # 1. Embedding'leri al (artık Milvus'ta — EyeOfWebFaceDataMilvus)
+        target_attrs = g.db_tools.get_batch_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, [target_face_id, face_id]
         )
-        embedding_data = cursor.fetchall()
-        if len(embedding_data) < 2:
+        face_embeddings = {}
+        for fid in (target_face_id, face_id):
+            emb = target_attrs.get(fid, {}).get("face_embedding_data")
+            if emb is not None:
+                face_embeddings[fid] = np.array(emb, dtype=np.float32)
+        if len(face_embeddings) < 2:
             raise ValueError("Hedef veya ilişkili yüz embedding bulunamadı")
-        face_embeddings = {
-            data["ID"]: np.array(
-                ast.literal_eval(data["FaceEmbeddingData"]), dtype=np.float32
-            )
-            for data in embedding_data
-        }
 
-        # 2. Benzer yüzleri bul
+        # 2. Benzer yüzleri bul (diğer yüzlerin embedding'leri Milvus'tan)
         target_group_ids = {target_face_id}
         face_group_ids = {face_id}
         cursor.execute(
-            'SELECT "ID", "FaceEmbeddingData" FROM "EyeOfWebFaceID" WHERE "ID" != %s AND "ID" != %s AND "FaceEmbeddingData" IS NOT NULL',
+            'SELECT "ID" FROM "EyeOfWebFaceID" WHERE "ID" != %s AND "ID" != %s',
             (target_face_id, face_id),
         )
-        all_other_faces = cursor.fetchall()
+        other_ids = [r["ID"] for r in cursor.fetchall()]
+        other_attrs = g.db_tools.get_batch_milvus_face_attributes(
+            EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME, other_ids
+        )
         target_embedding = face_embeddings[target_face_id]
         face_embedding = face_embeddings[face_id]
 
-        for other_face in all_other_faces:
-            other_id = other_face["ID"]
-            other_embedding = np.array(
-                ast.literal_eval(other_face["FaceEmbeddingData"]), dtype=np.float32
-            )
+        for other_id, _attrs in other_attrs.items():
+            emb = _attrs.get("face_embedding_data")
+            if emb is None:
+                continue
+            other_embedding = np.array(emb, dtype=np.float32)
             if other_embedding.size == 512:
                 similarity_to_target = np.dot(target_embedding, other_embedding) / (
                     np.linalg.norm(target_embedding) * np.linalg.norm(other_embedding)
@@ -4953,17 +5134,14 @@ def download_relationship_details_report(target_face_id, face_id):
                             img_height, img_width = cv_image.shape[:2]
                             face_ids_in_image = [f["id"] for f in faces_metadata]
                             if face_ids_in_image:
-                                query_placeholders = ",".join(
-                                    ["%s"] * len(face_ids_in_image)
+                                # FaceBox artık Milvus'ta — topluca çek
+                                fb_attrs = g.db_tools.get_batch_milvus_face_attributes(
+                                    EYE_OF_WEB_FACE_DATA_MILVUS_COLLECTION_NAME,
+                                    face_ids_in_image,
                                 )
-                                # Use tuple for query parameters
-                                cursor.execute(
-                                    f'SELECT "ID", "FaceBox" FROM "EyeOfWebFaceID" WHERE "ID" IN ({query_placeholders})',
-                                    tuple(face_ids_in_image),
-                                )
-                                face_boxes_results = cursor.fetchall()
                                 face_box_map = {
-                                    fb["ID"]: fb["FaceBox"] for fb in face_boxes_results
+                                    fid: attrs.get("face_box")
+                                    for fid, attrs in fb_attrs.items()
                                 }
                                 drawn_boxes = 0
                                 for face_meta in faces_metadata:
@@ -4978,10 +5156,15 @@ def download_relationship_details_report(target_face_id, face_id):
                                                 face_id_in_image in face_group_ids
                                             )
                                             if is_target or is_related:
-                                                facebox = np.array(
-                                                    ast.literal_eval(facebox_bytes),
-                                                    dtype=np.float32,
-                                                )
+                                                if isinstance(facebox_bytes, str):
+                                                    facebox = np.array(
+                                                        ast.literal_eval(facebox_bytes),
+                                                        dtype=np.float32,
+                                                    )
+                                                else:
+                                                    facebox = np.array(
+                                                        facebox_bytes, dtype=np.float32
+                                                    )
                                                 if len(facebox) == 4:
                                                     x1, y1, x2, y2 = map(int, facebox)
                                                     x1, y1 = max(0, x1), max(0, y1)

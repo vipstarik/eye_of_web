@@ -244,7 +244,12 @@ Kullanıcının yüklediği bir fotoğraftaki yüzü, veritabanındaki tüm kay�
 *   Kullanıcının belirlediği benzerlik eşiğinin (varsayılan: 0.6) üzerindeki sonuçlar listelenir.
 *   Sonuçlar görsel olarak veritabanından çekilen Base64 formatındaki yüz kesimleriyle birlikte gösterilir.
 
-##### b) Metin/Filtre ile Arama (Text/Filter Search)
+##### b) Kişisel Yüz Galerisi (Personal Face Gallery)
+**Rota:** `/face-gallery`
+
+Kullanıcı başına özel, izinli örneklerle sınırlı bir benzerlik galerisi. Kullanıcı, fotoğraftaki kişinin kendisi olduğunu veya açık izni bulunduğunu onaylar; görseller kaydedilmez, yalnızca 512 boyutlu embedding şablonları saklanır. Her hesapta en fazla 50 profil ve profil başına 5 örnek bulunabilir. Arama sadece oturum açan kullanıcının bu galerisi içinde çalışır; web tarama indeksleri, genel koleksiyonlar, beyaz liste ve EGM verileri kullanılmaz. Bu özellik modeli yeniden eğitmez ve benzerlik sonucu kimlik doğrulaması değildir.
+
+##### c) Metin/Filtre ile Arama (Text/Filter Search)
 **Rota:** `/search`, `/search/text`
 
 PostgreSQL üzerinde yapısal veriler (meta data) üzerinden arama yapar.
@@ -255,7 +260,7 @@ PostgreSQL üzerinde yapısal veriler (meta data) üzerinden arama yapar.
 *   `search_text`: Görsel başlığında (`ImageTitleID`) Türkçe metin araması yapar.
 *   Sayfalama (Pagination) desteği mevcuttur (`page`, `per_page` parametreleri).
 
-##### c) Benzer Yüz Arama (Search Similar Faces)
+##### d) Benzer Yüz Arama (Search Similar Faces)
 **Rota:** `/search/similar/<face_id>`
 
 Veritabanında zaten kayıtlı olan bir yüzü (`face_id`) kullanarak, ona benzer diğer yüzleri arar.
@@ -264,7 +269,7 @@ Veritabanında zaten kayıtlı olan bir yüzü (`face_id`) kullanarak, ona benze
 *   Sonuçlar, hem veritabanından çekilen Base64 görsel verileriyle hem de kaynak URL'leriyle birlikte sunulur.
 *   PDF raporu indirilebilir (`/download/similar_search_report`).
 
-##### d) Yüz Benzerlik ve Birliktelik Analizi (Face Similarity Pairs)
+##### e) Yüz Benzerlik ve Birliktelik Analizi (Face Similarity Pairs)
 **Rota:** `/face_similarity_analysis/<face_id>`
 
 Hedef yüzün bulunduğu görsellerdeki tüm yüz çiftleri arasındaki benzerliği hesaplar ve belirlenen eşiğin üzerindeki çiftleri, birlikte görülme sayısına göre listeler.
@@ -588,8 +593,10 @@ Ardından `src/app/config/` altındaki veritabanı bağlantı ayarlarını günc
 # Milvus koleksiyonlarını oluştur
 python src/MILVUS_SCHEMA_GENERATOR.py
 
-# PostgreSQL tablolarını oluşturmak için SQL dosyalarını çalıştırın.
-# (Örnek: psql -d eyeofweb -U eyeofwebuser -f src/sql/schema.sql)
+# PostgreSQL tablolarını oluşturmak için SQL dosyalarını sırayla çalıştırın.
+psql -d eyeofweb -U eyeofwebuser -f src/sql/schema.sql
+psql -d eyeofweb -U eyeofwebuser -f src/sql/users.sql
+# Mevcut kurulumlarda kişisel galeri tablolarını eklemek için users.sql dosyasını çalıştırın.
 ```
 
 **7. Uygulamayı Başlatın:**
@@ -805,7 +812,12 @@ Compares the face in a photo uploaded by the user with all records in the databa
 *   This vector is searched in Milvus database with `Cosine Similarity` algorithm.
 *   Results above the user-defined similarity threshold (default: 0.6) are listed.
 
-##### b) Text/Filter Search
+##### b) Personal Face Gallery
+**Route:** `/face-gallery`
+
+A private, per-account gallery of explicitly authorized reference samples. The user confirms that the pictured person is them or has given explicit permission. Source photos are not retained; only 512-dimensional face embeddings are stored. Each account is limited to 50 profiles and 5 samples per profile. Matching is scoped to the signed-in user’s gallery only; it does not query crawler indexes, global collections, whitelists, or EGM data. This enrolls reference templates, not model retraining, and a similarity score is not proof of identity.
+
+##### c) Text/Filter Search
 **Route:** `/search`, `/search/text`
 
 Searches on structural data (metadata) over PostgreSQL.
@@ -815,7 +827,7 @@ Searches on structural data (metadata) over PostgreSQL.
 *   `category`: Filtering by website category.
 *   Pagination support is available (`page`, `per_page` parameters).
 
-##### c) Similar Face Search
+##### d) Similar Face Search
 **Route:** `/search/similar/<face_id>`
 
 Searches for other faces similar to a face already registered in the database (`face_id`).
