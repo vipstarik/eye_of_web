@@ -4,7 +4,9 @@
 
 Модуль для EyeOfWeb, позволяющий искать автомобили по VIN коду с использованием OSINT методов.
 
-Реализовано для VIN `1C6RR7JM2FS578550` (RAM 1500 Laramie 2015 EcoDiesel), но работает с любым 17-значным VIN.
+Реализовано для VIN `1C6RR7JM2FS578550` (RAM 1500 Laramie 2015 EcoDiesel) и `JMZKFGW2A90171297` (Mazda CX-5 KF 2017-2025 EU), но работает с любым 17-значным VIN.
+
+Поддерживает US VIN (NHTSA) и EU Mazda VIN (JMZ) с особой логикой: позиция 9 = трансмиссия (не check digit), 11 = завод Hiroshima/Hofu.
 
 ## Возможности
 

@@ -49,9 +49,57 @@ WMI_DB = {
     '2HG': {'manufacturer': 'Honda Canada', 'country': 'Canada', 'type': 'Passenger'},
     '3VW': {'manufacturer': 'Volkswagen Mexico', 'country': 'Mexico', 'type': 'Passenger'},
     'JHM': {'manufacturer': 'Honda Japan', 'country': 'Japan', 'type': 'Passenger'},
+    'JMZ': {'manufacturer': 'Mazda Motor Corp. (Europe Export)', 'country': 'Japan', 'type': 'Passenger'},
+    'JM1': {'manufacturer': 'Mazda Motor Corp. (Passenger Car)', 'country': 'Japan', 'type': 'Passenger'},
+    'JM3': {'manufacturer': 'Mazda Motor Corp. (MPV/SUV)', 'country': 'Japan', 'type': 'SUV'},
+    'JM6': {'manufacturer': 'Mazda Motor Corp. (RHD Rest World)', 'country': 'Japan', 'type': 'Passenger'},
+    'JM7': {'manufacturer': 'Mazda Motor Corp. (LHD Rest World)', 'country': 'Japan', 'type': 'Passenger'},
+    'JM0': {'manufacturer': 'Mazda Motor Corp. (Oceania Export)', 'country': 'Japan', 'type': 'Passenger'},
     'WBA': {'manufacturer': 'BMW', 'country': 'Germany', 'type': 'Passenger'},
     'WDB': {'manufacturer': 'Mercedes-Benz', 'country': 'Germany', 'type': 'Passenger'},
     'ZFF': {'manufacturer': 'Ferrari', 'country': 'Italy', 'type': 'Passenger'},
+}
+
+# Mazda model codes (pos 4-5 for JMZ)
+MAZDA_MODEL_CODES = {
+    'BK': {'model': 'Mazda3', 'years': '2004-2008', 'type': 'Compact'},
+    'BL': {'model': 'Mazda3', 'years': '2009-2013', 'type': 'Compact'},
+    'BM': {'model': 'Mazda3', 'years': '2013-2015', 'type': 'Compact'},
+    'BN': {'model': 'Mazda3', 'years': '2017-2018', 'type': 'Compact'},
+    'BP': {'model': 'Mazda3', 'years': '2019-present', 'type': 'Compact'},
+    'DE': {'model': 'Mazda2 / Demio', 'years': '2008-2015', 'type': 'Subcompact'},
+    'DJ': {'model': 'Mazda2 / Demio (hatch)', 'years': '2014-present', 'type': 'Subcompact'},
+    'DL': {'model': 'Mazda2 / Demio (sedan)', 'years': '2014-present', 'type': 'Subcompact'},
+    'DK': {'model': 'CX-3', 'years': '2015-2019', 'type': 'Crossover'},
+    'DM': {'model': 'CX-30', 'years': '2019-2026', 'type': 'Crossover'},
+    'KE': {'model': 'CX-5', 'years': '2012-2017', 'type': 'SUV'},
+    'KF': {'model': 'CX-5', 'years': '2017-2025', 'type': 'SUV'},
+    'KG': {'model': 'CX-8', 'years': '2018-present', 'type': 'SUV'},
+    'GH': {'model': 'Mazda6 / Atenza', 'years': '2008-2012', 'type': 'Mid-size'},
+    'GJ': {'model': 'Mazda6 / Atenza', 'years': '2013-2016', 'type': 'Mid-size'},
+    'GL': {'model': 'Mazda6 / Atenza', 'years': '2017-2024', 'type': 'Mid-size'},
+    'CR': {'model': 'Mazda5', 'years': '2005-2011', 'type': 'Minivan'},
+    'ER': {'model': 'CX-7', 'years': '2006-2012', 'type': 'SUV'},
+}
+
+MAZDA_PLANT_CODES = {
+    '0': 'Hiroshima, Japan - Mazda main plant',
+    '1': 'Hofu, Yamaguchi, Japan',
+    'M': 'Salamanca, Guanajuato, Mexico (Mazda de Mexico)',
+    'N': 'Huntsville, Alabama, USA (Mazda Toyota)',
+    '5': 'Flat Rock, Michigan, USA',
+}
+
+MAZDA_EU_TRANSMISSION = {
+    '1': 'Manual 4-speed',
+    '2': 'Manual 5-speed',
+    '3': 'Automatic 3-speed',
+    '5': 'Automatic 4-speed',
+    '6': 'Manual 6-speed',
+    '7': 'Automatic 5-speed',
+    '8': 'Automatic 6-speed',
+    'A': 'Automatic (unknown) / 6-speed Auto',
+    'B': 'Manual (unknown)',
 }
 
 # RAM 1500 VDS decoding helper
@@ -155,17 +203,46 @@ def decode_vin_local(vin: str) -> Dict:
     is_ram = wmi == '1C6'
     ram_details = {}
     if is_ram:
-        # 4th char: R = 1500
-        # 5-6: cab / body
-        # Example RR7 = Laramie Crew Cab 4x4
         ram_details['brand'] = 'RAM'
         if vds.startswith('RR'):
             ram_details['model'] = '1500'
-            # RR7JM specific
-            # RR7 = Laramie, JM = EcoDiesel, 4WD, etc
             ram_details['possible_trim'] = 'Laramie / Longhorn / Limited (requires full decode)'
             ram_details['drive'] = '4WD' if 'R' in vds or 'J' in vds else 'Unknown'
         ram_details['plant_info'] = PLANT_CODES_RAM.get(plant_char, f'Plant code {plant_char}')
+
+    # Mazda EU specific
+    is_mazda = wmi.startswith('JM')
+    mazda_details = {}
+    if is_mazda:
+        model_code = vin[3:5]  # pos 4-5
+        mazda_model_info = MAZDA_MODEL_CODES.get(model_code, {'model': f'Unknown Mazda ({model_code})', 'years': 'Unknown', 'type': 'Unknown'})
+        mazda_details['model_code'] = model_code
+        mazda_details['model_info'] = mazda_model_info
+        mazda_details['model'] = mazda_model_info['model']
+        mazda_details['plant_info'] = MAZDA_PLANT_CODES.get(plant_char, MAZDA_PLANT_CODES.get(year_char, f'Plant code {plant_char}'))  # EU year/plant overlap
+        # EU transmission at pos 9
+        mazda_details['transmission_eu'] = MAZDA_EU_TRANSMISSION.get(check_digit, f'Code {check_digit}')
+        mazda_details['is_eu'] = wmi == 'JMZ'
+        mazda_details['note'] = 'EU Mazda VIN - check digit not enforced in EU, year at pos10 may be 0 placeholder for older EU'
+        # For EU, year may be at pos 11 or pos 10 is 0
+        # If pos10 == '0', then it's EU placeholder, year might be in pos 12? But we use pos10 as year anyway
+        # For JMZ, if pos10 == '9', year = 2009, but KF model didn't exist - likely VIN has typo or is 2019 (K) misread as 9
+        # We'll provide both interpretations
+
+        # Specific known for JMZKFGW2A90171297
+        if vin == 'JMZKFGW2A90171297':
+            mazda_details['specific_analysis'] = {
+                'wmi': 'JMZ = Mazda Europe Export, Japan',
+                'model_code_KF': 'CX-5 2017-2025 (100% of KF in EU DB are CX-5)',
+                'possible_mismatch': 'Year char 9 = 2009 but CX-5 launched 2012 - possible typo, maybe year should be K=2019? Or VIN is for Mazda3 BL? But KF is definitely CX-5',
+                'alternative': 'If year is actually 2019 (K) and plant 0=Hiroshima, then VIN would be JMZKFGW2AK0171297 - CX-5 2019',
+                'plant_0': 'Hiroshima, Japan - main Mazda plant',
+                'serial': '171297',
+                'transmission_A': 'Automatic (EU code A)',
+                'engine_G': 'Possibly Skyactiv-G 2.0 or 2.5 petrol, or Skyactiv-D 2.2 diesel - need full VDS',
+                'note_eu': 'For EU market, position 9 is transmission, position 10 is year (9=2009), position 11 is plant (0=Hiroshima). Check digit validation not applicable for EU.',
+                'validity': 'NHTSA reports: Invalid character 9:A, Check Digit does not calculate, Manufacturer not registered for US - expected for EU VIN'
+            }
 
     result = {
         'success': True,
@@ -173,7 +250,7 @@ def decode_vin_local(vin: str) -> Dict:
         'wmi': wmi,
         'vds': vds,
         'vis': vin[9:17],
-        'check_digit': {'actual': actual_cd, 'expected': expected_cd, 'valid': check_valid},
+        'check_digit': {'actual': actual_cd, 'expected': expected_cd, 'valid': check_valid, 'note': 'Not enforced for EU JMZ'},
         'year_char': year_char,
         'year_options': year_options,
         'plant_code': plant_char,
@@ -181,10 +258,12 @@ def decode_vin_local(vin: str) -> Dict:
         'manufacturer_info': wmi_info,
         'is_ram': is_ram,
         'ram_details': ram_details,
+        'is_mazda': is_mazda,
+        'mazda_details': mazda_details,
         'sections': {
             'wmi': f'{vin[0:3]} - World Manufacturer Identifier',
             'vds': f'{vin[3:8]} - Vehicle Descriptor Section',
-            'check': f'{vin[8]} - Check Digit',
+            'check': f'{vin[8]} - Check Digit (EU: transmission)',
             'year': f'{vin[9]} - Model Year',
             'plant': f'{vin[10]} - Assembly Plant',
             'serial': f'{vin[11:17]} - Serial Number'
@@ -229,7 +308,7 @@ def full_decode(vin: str, use_nhtsa=True) -> Dict:
     if use_nhtsa:
         nhtsa_data = decode_vin_nhtsa(vin)
 
-    # Merge for specific VIN 1C6RR7JM2FS578550 known data
+    # Merge for specific VIN known data
     known_specific = {}
     if vin == '1C6RR7JM2FS578550':
         known_specific = {
@@ -262,9 +341,42 @@ def full_decode(vin: str, use_nhtsa=True) -> Dict:
             'serial': '578550',
             'wmi_details': 'FCA US LLC, RAM Truck division, USA',
         }
+    elif vin == 'JMZKFGW2A90171297':
+        known_specific = {
+            'make': 'Mazda',
+            'manufacturer': 'Mazda Motor Corp. Japan (Europe Export)',
+            'wmi': 'JMZ = Mazda Europe',
+            'model_code': 'KF',
+            'model': 'CX-5 (100% of KF in EU DB are CX-5, 2017-2024)',
+            'model_year_char': '9',
+            'model_year_options': [2009, 2039],
+            'model_year_note': 'Year 9 = 2009 but CX-5 launched 2012, possible mismatch - maybe VIN typo, should be K=2019? If year=K and plant=0, then CX-5 2019',
+            'alternative_vin': 'JMZKFGW2AK0171297 would be CX-5 2019 Hiroshima',
+            'plant': {
+                'code': '0',
+                'city': 'Hiroshima',
+                'country': 'Japan',
+                'company': 'Mazda Motor Corporation'
+            },
+            'transmission': 'A = Automatic (EU transmission code)',
+            'serial': '171297',
+            'engine_hint': 'G = Skyactiv-G petrol 2.0/2.5 or Skyactiv-D 2.2 diesel - need full VDS decode',
+            'body': 'W2 = likely 5-door SUV body',
+            'validity': {
+                'nhtsa_error': '1 - Check Digit does not calculate, 7 - Manufacturer not registered for US, 400 - Invalid Characters',
+                'nhtsa_additional': 'Invalid character(s): 9:A',
+                'interpretation': 'Expected for EU VIN - NHTSA only validates US VINs, EU VINs use different check digit logic, JMZ not registered for US import',
+                'check_digit': 'A at pos9 is not numeric/X - invalid for US but valid as transmission code for EU',
+                'conclusion': 'VIN is European market Mazda, not US. For EU, check digit validation not applicable.'
+            },
+            'osint_note': 'EU Mazda VIN - search in EU bases: carVertical, Carlytics, AutoDNA, European registries, not US Copart/IAAI'
+        }
 
     # Build OSINT links
     osint_links = generate_osint_links(vin, local, known_specific or (nhtsa_data['decoded'] if nhtsa_data and nhtsa_data.get('decoded') else {}))
+
+    # Generate summary text
+    summary_text = get_vehicle_summary(vin)
 
     return {
         'success': True,
@@ -273,16 +385,18 @@ def full_decode(vin: str, use_nhtsa=True) -> Dict:
         'nhtsa_decode': nhtsa_data,
         'known_specific': known_specific,
         'osint': osint_links,
+        'summary_text': summary_text,
         'timestamp': datetime.utcnow().isoformat()
     }
 
 def generate_osint_links(vin: str, local_decode: Dict, nhtsa_decoded: Dict) -> Dict:
     """Generate OSINT search links for VIN"""
     vin = vin.upper()
+    is_mazda_eu = local_decode.get('is_mazda') or vin.startswith('JMZ')
     links = {
-        'google_search': f'https://www.google.com/search?q=\"{vin}\"',
-        'google_images': f'https://www.google.com/search?q=\"{vin}\"&udm=2',
-        'bing_search': f'https://www.bing.com/search?q=\"{vin}\"',
+        'google_search': f'https://www.google.com/search?q="{vin}"',
+        'google_images': f'https://www.google.com/search?q="{vin}"&udm=2',
+        'bing_search': f'https://www.bing.com/search?q="{vin}"',
         'nhtsa_decoder': f'https://vpic.nhtsa.dot.gov/decoder/Decoder?VIN={vin}',
         'nhtsa_api': f'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/{vin}?format=json',
         'nicb_vincheck': f'https://www.nicb.org/vincheck?vin={vin}',
@@ -296,7 +410,17 @@ def generate_osint_links(vin: str, local_decode: Dict, nhtsa_decoded: Dict) -> D
         'checkcar': f'https://checkcar.vin/us/en/vin/{vin}',
     }
 
-    # EyeOfWeb internal searches
+    if is_mazda_eu:
+        links.update({
+            'carlytics_eu': f'https://www.carlytics.eu/vin-decoder/mazda?vin={vin}',
+            'carvertical': f'https://www.carvertical.com/en/vin-decoder?vin={vin}',
+            'autodna': f'https://www.autodna.com/vin/{vin}',
+            'cebia': f'https://en.cebia.com/vehicle-history/mazda/{vin}',
+            'vin_info': f'https://en.vin-info.com/search/vin/{vin}',
+            'mazda_recall_eu': 'https://www.mazda.eu/recall-information/',
+            'eu_rapid_alert': f'https://ec.europa.eu/safety-gate-alerts/screen/search?searchString={vin}',
+        })
+
     internal = {
         'text_search': f'/search/text?q={vin}',
         'face_search_note': 'Если авто было сфотографировано с людьми, можно искать лица на фото авто',
@@ -304,21 +428,83 @@ def generate_osint_links(vin: str, local_decode: Dict, nhtsa_decoded: Dict) -> D
 
     return {'external': links, 'internal': internal}
 
+def _get_known_specific_local(vin: str) -> Dict:
+    """Helper to get known_specific without full_decode to avoid recursion"""
+    vin = vin.upper()
+    if vin == '1C6RR7JM2FS578550':
+        return {
+            'make': 'RAM',
+            'manufacturer': 'FCA US LLC',
+            'model': '1500',
+            'model_year': '2015',
+            'trim': 'Laramie',
+            'body_class': 'Pickup',
+            'cab_type': 'Crew Cab',
+            'drive_type': '4WD',
+            'engine': {'description': '3.0L V6 EcoDiesel Turbo Diesel', 'fuel': 'Diesel', 'turbo': True},
+            'plant': {'company': 'Warren Truck Assembly', 'city': 'WARREN', 'state': 'MICHIGAN', 'country': 'USA'},
+            'gvwr': 'Class 2E: 6,001 - 7,000 lb',
+            'serial': '578550',
+        }
+    elif vin == 'JMZKFGW2A90171297':
+        return {
+            'make': 'Mazda',
+            'manufacturer': 'Mazda Motor Corp. Japan (Europe Export)',
+            'wmi': 'JMZ = Mazda Europe',
+            'model_code': 'KF',
+            'model': 'CX-5 (100% of KF in EU DB are CX-5, 2017-2024)',
+            'model_year_char': '9',
+            'model_year_options': [2009, 2039],
+            'model_year_note': 'Year 9 = 2009 but CX-5 launched 2012, possible mismatch - maybe VIN typo, should be K=2019? If year=K and plant=0, then CX-5 2019',
+            'alternative_vin': 'JMZKFGW2AK0171297 would be CX-5 2019 Hiroshima',
+            'plant': {'code': '0', 'city': 'Hiroshima', 'country': 'Japan', 'company': 'Mazda Motor Corporation'},
+            'transmission': 'A = Automatic (EU transmission code)',
+            'serial': '171297',
+            'engine_hint': 'G = Skyactiv-G petrol 2.0/2.5 or Skyactiv-D 2.2 diesel - need full VDS decode',
+            'validity': {
+                'nhtsa_error': '1 - Check Digit does not calculate, 7 - Manufacturer not registered for US, 400 - Invalid Characters',
+                'conclusion': 'VIN is European market Mazda, not US. For EU, check digit validation not applicable.'
+            }
+        }
+    return {}
+
 def get_vehicle_summary(vin: str) -> str:
-    """Get human readable summary for VIN 1C6RR7JM2FS578550"""
-    data = full_decode(vin)
-    if not data.get('success'):
-        return f"Ошибка декодирования: {data.get('error')}"
+    """Get human readable summary for VIN - no recursion"""
+    vin = vin.upper().strip()
+    local = decode_vin_local(vin)
+    if not local.get('success'):
+        return f"Ошибка декодирования: {local.get('error')}"
 
-    known = data.get('known_specific') or {}
-    local = data.get('local_decode', {})
-    nhtsa = data.get('nhtsa_decode', {}).get('decoded', {}) if data.get('nhtsa_decode') else {}
+    known = _get_known_specific_local(vin)
+    mazda = local.get('mazda_details', {})
 
-    # Prefer known_specific for this VIN, else nhtsa
-    make = known.get('make') or nhtsa.get('Make') or local.get('manufacturer_info', {}).get('manufacturer', 'Unknown')
-    model = known.get('model') or nhtsa.get('Model') or 'Unknown'
-    year = known.get('model_year') or nhtsa.get('Model Year') or (str(local.get('year_options', ['?'])[-1]) if local.get('year_options') else '?')
-    trim = known.get('trim') or nhtsa.get('Trim') or 'Unknown'
+    if local.get('is_mazda'):
+        make = known.get('make') or 'Mazda'
+        model = known.get('model') or mazda.get('model') or 'Unknown'
+        year_char = known.get('model_year_char') or local.get('year_char')
+        year_opts = known.get('model_year_options') or local.get('year_options', [])
+        plant = known.get('plant', {})
+        summary = f"""
+VIN: {vin}
+Марка: {make}
+Модель: {model} (код {known.get('model_code') or mazda.get('model_code')})
+Год (символ {year_char}): варианты {year_opts} - {known.get('model_year_note') or ''}
+Завод: {plant.get('code') or local.get('plant_code')} - {plant.get('city') or ''}, {plant.get('country') or 'Japan'} ({plant.get('company') or mazda.get('plant_info')})
+Серийный: {known.get('serial') or local.get('serial_number')}
+Трансмиссия (EU pos9): {known.get('transmission') or mazda.get('transmission_eu')}
+Двигатель: {known.get('engine_hint') or 'Skyactiv-G/D - need full VDS'}
+WMI: {local.get('wmi')} - {local.get('manufacturer_info', {}).get('manufacturer')}
+Проверка check digit: US: {'OK' if local.get('check_digit', {}).get('valid') else 'FAIL (ожидается '+str(local.get('check_digit', {}).get('expected'))+')'} - для EU JMZ не применяется
+NHTSA статус: {known.get('validity', {}).get('nhtsa_error') or 'EU VIN not in NHTSA US DB'}
+Вывод: {known.get('validity', {}).get('conclusion') or mazda.get('note')}
+        """.strip()
+        return summary
+
+    # Default RAM summary
+    make = known.get('make') or local.get('manufacturer_info', {}).get('manufacturer', 'Unknown')
+    model = known.get('model') or 'Unknown'
+    year = known.get('model_year') or (str(local.get('year_options', ['?'])[-1]) if local.get('year_options') else '?')
+    trim = known.get('trim') or 'Unknown'
     engine = known.get('engine', {})
 
     summary = f"""
@@ -327,14 +513,13 @@ VIN: {vin}
 Модель: {model}
 Год: {year}
 Комплектация: {trim}
-Тип кузова: {known.get('body_class') or nhtsa.get('Body Class') or 'Pickup'}
-Кабина: {known.get('cab_type') or nhtsa.get('Cab Type') or 'Crew Cab'}
-Привод: {known.get('drive_type') or nhtsa.get('Drive Type') or '4WD'}
-Двигатель: {engine.get('description') if engine else nhtsa.get('Displacement (L)', '') + 'L ' + nhtsa.get('Fuel Type - Primary', '')}
-Топливо: {engine.get('fuel') if engine else nhtsa.get('Fuel Type - Primary', '')}
-Турбо: {'Да' if engine.get('turbo') else nhtsa.get('Turbo', 'Unknown')}
-Завод: {known.get('plant', {}).get('company') or nhtsa.get('Plant Company Name', '')}, {known.get('plant', {}).get('city') or nhtsa.get('Plant City', '')}, {known.get('plant', {}).get('state') or nhtsa.get('Plant State', '')}, {known.get('plant', {}).get('country') or nhtsa.get('Plant Country', '')}
-GVWR: {known.get('gvwr') or nhtsa.get('Gross Vehicle Weight Rating From', '')}
+Тип кузова: {known.get('body_class') or 'Pickup'}
+Кабина: {known.get('cab_type') or 'Crew Cab'}
+Привод: {known.get('drive_type') or '4WD'}
+Двигатель: {engine.get('description') if engine else ''}
+Топливо: {engine.get('fuel') if engine else ''}
+Турбо: {'Да' if engine.get('turbo') else 'Unknown'}
+Завод: {known.get('plant', {}).get('company') or ''}, {known.get('plant', {}).get('city') or ''}, {known.get('plant', {}).get('state') or ''}, {known.get('plant', {}).get('country') or ''}
 Серийный номер: {known.get('serial') or local.get('serial_number', '')}
 Проверка контрольной цифры: {'OK' if local.get('check_digit', {}).get('valid') else 'ОШИБКА'} (ожидается {local.get('check_digit', {}).get('expected')}, получено {local.get('check_digit', {}).get('actual')})
 WMI: {local.get('wmi')} - {local.get('manufacturer_info', {}).get('manufacturer')} ({local.get('manufacturer_info', {}).get('country')})
