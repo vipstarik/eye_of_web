@@ -1,0 +1,173 @@
+{% extends 'base.html' %}
+
+{% block title %}Поиск авто по VIN - {{ env_config.APP_NAME }}{% endblock %}
+
+{% block styles %}
+<style>
+    .vin-container {
+        background-color: #fff;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        padding: 30px;
+        margin-bottom: 30px;
+    }
+    .vin-input {
+        font-family: monospace;
+        font-size: 1.2rem;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+    }
+    .vin-example {
+        font-family: monospace;
+        background: #f8f9fa;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .info-card {
+        border-left: 4px solid #0d6efd;
+        background: #f8f9ff;
+    }
+    .osint-link {
+        display: inline-block;
+        margin: 4px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-10">
+            <div class="card vin-container">
+                <div class="card-header bg-dark text-white d-flex align-items-center">
+                    <i class="fas fa-car fa-lg me-3"></i>
+                    <h3 class="mb-0">Поиск авто по VIN коду</h3>
+                    <span class="badge bg-warning text-dark ms-auto">OSINT</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-4">
+                        Введите 17-значный VIN код для получения полной информации об автомобиле. 
+                        Система поддерживает проверку контрольной цифры, декодирование WMI/VDS/VIS, 
+                        запрос к NHTSA vPIC API и генерацию OSINT ссылок для дальнейшего расследования.
+                    </p>
+
+                    <form method="post" action="{{ url_for('web.vin_search') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="mb-3">
+                            <label for="vin" class="form-label fw-bold">VIN код (17 символов):</label>
+                            <div class="input-group input-group-lg">
+                                <span class="input-group-text"><i class="fas fa-barcode"></i></span>
+                                <input type="text" id="vin" name="vin" class="form-control vin-input" 
+                                       placeholder="1C6RR7JM2FS578550" maxlength="17" required
+                                       value="{{ request.form.vin or '1C6RR7JM2FS578550' }}"
+                                       pattern="[A-HJ-NPR-Za-hj-npr-z0-9]{17}"
+                                       title="17 символов, без I,O,Q">
+                                <button class="btn btn-primary" type="submit">
+                                    <i class="fas fa-search me-2"></i>Декодировать
+                                </button>
+                            </div>
+                            <div class="form-text">
+                                Пример: <span class="vin-example" onclick="document.getElementById('vin').value='1C6RR7JM2FS578550'">1C6RR7JM2FS578550</span>
+                                <span class="ms-3">Формат: WMI (3) + VDS (5) + Check (1) + Year (1) + Plant (1) + Serial (6)</span>
+                            </div>
+                        </div>
+
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="use_nhtsa" id="use_nhtsa" checked>
+                                    <label class="form-check-label" for="use_nhtsa">
+                                        Использовать NHTSA vPIC API (онлайн)
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="search_images" id="search_images" checked>
+                                    <label class="form-check-label" for="search_images">
+                                        Искать связанные изображения в EyeOfWeb БД
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+
+                    <div class="row mt-4">
+                        <div class="col-md-6">
+                            <div class="card info-card h-100">
+                                <div class="card-body">
+                                    <h6><i class="fas fa-info-circle me-2"></i>Что такое VIN?</h6>
+                                    <p class="small mb-0">
+                                        Vehicle Identification Number — уникальный 17-значный код автомобиля. 
+                                        Содержит информацию о производителе, характеристиках, годе выпуска, заводе и серийном номере.
+                                        Контрольная цифра (9-я позиция) защищает от подделки.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card info-card h-100" style="border-left-color: #198754;">
+                                <div class="card-body">
+                                    <h6><i class="fas fa-shield-alt me-2"></i>OSINT возможности</h6>
+                                    <p class="small mb-0">
+                                        После декодирования система генерирует ссылки для проверки истории авто:
+                                        Google, Copart, IAAI, Carfax, BidFax, NICB, EpicVIN и другие аукционы/базы.
+                                        Можно также искать лица на фото автомобиля через EyeOfWeb.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {% if result %}
+                    <hr class="my-4">
+                    <h4 class="mb-3"><i class="fas fa-check-circle text-success me-2"></i>Результат для {{ result.vin }}</h4>
+                    <div class="alert alert-{{ 'success' if success else 'danger' }}">{{ message }}</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Quick decode info -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="fas fa-list me-2"></i>Поддерживаемые проверки</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <ul class="small">
+                                <li>Валидация формата (17 символов, без I,O,Q)</li>
+                                <li>Проверка контрольной цифры (ISO 3779)</li>
+                                <li>Декодирование WMI (производитель, страна)</li>
+                            </ul>
+                        </div>
+                        <div class="col-md-4">
+                            <ul class="small">
+                                <li>Декодирование года выпуска (10-я позиция)</li>
+                                <li>Завод-изготовитель (11-я позиция)</li>
+                                <li>Серийный номер (12-17)</li>
+                            </ul>
+                        </div>
+                        <div class="col-md-4">
+                            <ul class="small">
+                                <li>NHTSA vPIC API (140+ полей)</li>
+                                <li>OSINT ссылки (12+ источников)</li>
+                                <li>Интеграция с EyeOfWeb Image DB</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('vin').addEventListener('input', function(e) {
+    e.target.value = e.target.value.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '');
+});
+</script>
+{% endblock %}

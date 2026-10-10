@@ -5257,6 +5257,86 @@ def download_comparison_report():
     )
 
 
+@web_bp.route("/vin_search", methods=["GET", "POST"])
+@web_bp.route("/vin/search", methods=["GET", "POST"])
+@web_bp.route("/search/vin", methods=["GET", "POST"])
+@login_required
+@limiter.limit("30/minute")
+def vin_search():
+    """Поиск авто по VIN коду - VIN OSINT search"""
+    from app.controllers.vin_controller import VinController
+
+    if request.method == "POST":
+        vin = request.form.get("vin", "").strip().upper()
+        use_nhtsa = "use_nhtsa" in request.form
+        # search_images = "search_images" in request.form
+
+        if not vin:
+            flash("Пожалуйста, введите VIN код", "warning")
+            return redirect(url_for("web.vin_search"))
+
+        success, message, result = VinController.search_by_vin(vin, use_nhtsa=use_nhtsa)
+
+        if not success:
+            flash(message, "danger")
+            return render_template("vin_search.html", vin=vin)
+
+        # Store in session for PDF etc
+        session["last_vin_search"] = {
+            "vin": vin,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+        return render_template(
+            "vin_results.html",
+            vin=vin,
+            success=success,
+            message=message,
+            result=result
+        )
+
+    # GET - show form, support ?vin= query param for direct linking
+    vin_param = request.args.get("vin", "")
+    if vin_param:
+        from app.controllers.vin_controller import VinController
+        vin_param = vin_param.strip().upper()
+        use_nhtsa = request.args.get("use_nhtsa", "1") != "0"
+        success, message, result = VinController.search_by_vin(vin_param, use_nhtsa=use_nhtsa)
+        if success:
+            return render_template(
+                "vin_results.html",
+                vin=vin_param,
+                success=success,
+                message=message,
+                result=result
+            )
+        else:
+            flash(message, "warning")
+
+    return render_template("vin_search.html")
+
+
+@web_bp.route("/api/vin/decode/<vin>", methods=["GET"])
+@login_required
+@limiter.limit("60/minute")
+def api_vin_decode(vin):
+    """API endpoint for VIN decoding"""
+    from app.controllers.vin_controller import VinController
+    success, message, result = VinController.search_by_vin(vin, use_nhtsa=True)
+    if not success:
+        return jsonify({"success": False, "message": message, "vin": vin}), 400
+    return jsonify({
+        "success": True,
+        "message": message,
+        "vin": vin,
+        "summary": result.get("summary_text"),
+        "local_decode": result.get("local_decode"),
+        "nhtsa": result.get("nhtsa_decode", {}).get("decoded") if result.get("nhtsa_decode") else None,
+        "known_specific": result.get("known_specific"),
+        "osint": result.get("osint")
+    })
+
+
 @web_bp.route("/login_failed")  # Example route, might be replaced
 def login_failed():
     return "Login failed. Please check credentials.", 401

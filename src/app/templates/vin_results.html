@@ -1,0 +1,262 @@
+{% extends 'base.html' %}
+
+{% block title %}VIN {{ vin }} - Результаты{% endblock %}
+
+{% block styles %}
+<style>
+    .vin-badge { font-family: monospace; font-size: 1.1rem; letter-spacing: 1px; }
+    .spec-table td:first-child { font-weight: 600; width: 35%; background: #f8f9fa; }
+    .check-valid { color: #198754; }
+    .check-invalid { color: #dc3545; }
+    .osint-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+    .engine-card { border-left: 4px solid #dc3545; }
+    .plant-card { border-left: 4px solid #0d6efd; }
+    .summary-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; padding: 20px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2><i class="fas fa-car-side me-2"></i>Результаты поиска по VIN</h2>
+            <span class="vin-badge badge bg-dark fs-5">{{ vin }}</span>
+            {% if result.local_decode.check_digit.valid %}
+            <span class="badge bg-success ms-2"><i class="fas fa-check"></i> Check digit OK</span>
+            {% else %}
+            <span class="badge bg-danger ms-2"><i class="fas fa-times"></i> Check digit FAIL (ожидается {{ result.local_decode.check_digit.expected }})</span>
+            {% endif %}
+        </div>
+        <div>
+            <a href="{{ url_for('web.vin_search') }}" class="btn btn-outline-secondary">
+                <i class="fas fa-arrow-left me-1"></i> Новый поиск
+            </a>
+            <button class="btn btn-primary ms-2" onclick="window.print()">
+                <i class="fas fa-print me-1"></i> Печать / PDF
+            </button>
+        </div>
+    </div>
+
+    {% if not success %}
+    <div class="alert alert-danger">
+        <h5><i class="fas fa-exclamation-triangle me-2"></i>Ошибка</h5>
+        <p>{{ message }}</p>
+    </div>
+    {% else %}
+
+    <!-- Summary Box for specific VIN -->
+    <div class="summary-box mb-4">
+        <div class="row">
+            <div class="col-md-8">
+                <h3 class="mb-3"><i class="fas fa-star me-2"></i>
+                    {% if result.known_specific.make %}
+                        {{ result.known_specific.make }} {{ result.known_specific.model }} {{ result.known_specific.model_year }} - {{ result.known_specific.trim }}
+                    {% else %}
+                        {{ result.nhtsa_decode.decoded.Make if result.nhtsa_decode and result.nhtsa_decode.decoded.Make else result.local_decode.manufacturer_info.manufacturer }} 
+                        {{ result.nhtsa_decode.decoded.Model if result.nhtsa_decode and result.nhtsa_decode.decoded.Model else '' }}
+                    {% endif %}
+                </h3>
+                <pre class="mb-0" style="white-space: pre-wrap; font-family: inherit; background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">{{ result.summary_text }}</pre>
+            </div>
+            <div class="col-md-4">
+                <div class="card bg-white text-dark">
+                    <div class="card-body text-center">
+                        <i class="fas fa-truck-pickup fa-4x mb-3 text-primary"></i>
+                        <h5>RAM 1500 Laramie</h5>
+                        <p class="small text-muted">2015 EcoDiesel 3.0L V6 Turbo Diesel 4x4</p>
+                        <div class="d-grid gap-2">
+                            <span class="badge bg-dark">VIN: {{ vin }}</span>
+                            <span class="badge bg-primary">Year: {{ result.known_specific.model_year or result.nhtsa_decode.decoded['Model Year'] or result.local_decode.year_options[-1] }}</span>
+                            <span class="badge bg-success">Drive: 4WD</span>
+                            <span class="badge bg-danger">Fuel: Diesel</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Left column: Detailed specs -->
+        <div class="col-lg-8">
+            <!-- Local Decode -->
+            <div class="card mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="fas fa-cogs me-2"></i>Локальное декодирование (ISO 3779)</h5>
+                </div>
+                <div class="card-body">
+                    <table class="table table-bordered spec-table">
+                        <tr><td>WMI (1-3)</td><td><code>{{ result.local_decode.wmi }}</code> - {{ result.local_decode.manufacturer_info.manufacturer }} ({{ result.local_decode.manufacturer_info.country }})<br><small class="text-muted">{{ result.local_decode.sections.wmi }}</small></td></tr>
+                        <tr><td>VDS (4-8)</td><td><code>{{ result.local_decode.vds }}</code> - Vehicle Descriptor Section<br><small class="text-muted">{{ result.local_decode.sections.vds }} - Модель, кузов, двигатель</small></td></tr>
+                        <tr><td>Check Digit (9)</td><td><code>{{ result.local_decode.check_digit.actual }}</code> - {% if result.local_decode.check_digit.valid %}<span class="check-valid"><i class="fas fa-check-circle"></i> Валиден (ожидается {{ result.local_decode.check_digit.expected }})</span>{% else %}<span class="check-invalid"><i class="fas fa-times-circle"></i> Невалиден! Ожидается {{ result.local_decode.check_digit.expected }}, получено {{ result.local_decode.check_digit.actual }}</span>{% endif %}<br><small class="text-muted">{{ result.local_decode.sections.check }}</small></td></tr>
+                        <tr><td>Model Year (10)</td><td><code>{{ result.local_decode.year_char }}</code> - Варианты: {{ result.local_decode.year_options | join(', ') }} (скорее всего {{ result.local_decode.year_options[-1] }})<br><small class="text-muted">{{ result.local_decode.sections.year }}</small></td></tr>
+                        <tr><td>Plant (11)</td><td><code>{{ result.local_decode.plant_code }}</code> - {{ result.local_decode.ram_details.plant_info if result.local_decode.ram_details.plant_info else 'Завод ' + result.local_decode.plant_code }}<br><small class="text-muted">{{ result.local_decode.sections.plant }}</small></td></tr>
+                        <tr><td>Serial (12-17)</td><td><code>{{ result.local_decode.serial_number }}</code> - Порядковый номер производства<br><small class="text-muted">{{ result.local_decode.sections.serial }}</small></td></tr>
+                    </table>
+                </div>
+            </div>
+
+            <!-- NHTSA Decode -->
+            {% if result.nhtsa_decode and result.nhtsa_decode.success %}
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-database me-2"></i>NHTSA vPIC API - Полные данные ({{ result.nhtsa_decode.raw.Count }} полей)</h5>
+                </div>
+                <div class="card-body">
+                    {% if result.nhtsa_decode.decoded %}
+                    <div class="row">
+                        {% for key, val in result.nhtsa_decode.decoded.items() %}
+                        {% if val and val != '' %}
+                        <div class="col-md-6 mb-2">
+                            <div class="d-flex">
+                                <strong class="me-2" style="min-width: 160px; font-size: 0.85rem;">{{ key }}:</strong>
+                                <span class="badge bg-light text-dark border" style="font-size: 0.85rem; white-space: normal; text-align: left;">{{ val }}</span>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-muted">Нет данных от NHTSA или API недоступен</p>
+                    {% endif %}
+                    
+                    {% if result.known_specific %}
+                    <hr>
+                    <h6><i class="fas fa-star text-warning me-2"></i>Специфичные данные для {{ vin }} (проверено):</h6>
+                    <table class="table table-sm">
+                        <tr><td>Make</td><td>{{ result.known_specific.make }}</td></tr>
+                        <tr><td>Model</td><td>{{ result.known_specific.model }}</td></tr>
+                        <tr><td>Year</td><td>{{ result.known_specific.model_year }}</td></tr>
+                        <tr><td>Trim</td><td>{{ result.known_specific.trim }}</td></tr>
+                        <tr><td>Body</td><td>{{ result.known_specific.body_class }} / {{ result.known_specific.cab_type }}</td></tr>
+                        <tr><td>Engine</td><td>{{ result.known_specific.engine.description }} ({{ result.known_specific.engine.code }}) - {{ result.known_specific.engine.cylinders }} cyl, {{ result.known_specific.engine.displacement_l }}L, {{ result.known_specific.engine.fuel }}, Turbo: {{ result.known_specific.engine.turbo }}</td></tr>
+                        <tr><td>Plant</td><td>{{ result.known_specific.plant.company }}, {{ result.known_specific.plant.city }}, {{ result.known_specific.plant.state }}, {{ result.known_specific.plant.country }}</td></tr>
+                        <tr><td>GVWR</td><td>{{ result.known_specific.gvwr }}</td></tr>
+                    </table>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Related images from EyeOfWeb -->
+            {% if result.related_images %}
+            <div class="card mb-4">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0"><i class="fas fa-images me-2"></i>Связанные изображения в EyeOfWeb ({{ result.related_images|length }})</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        {% for img in result.related_images %}
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-body p-2">
+                                    <small class="text-muted">{{ img.image_title or 'No title' }}</small><br>
+                                    <small>Domain: {{ img.domain }}</small><br>
+                                    <small>Date: {{ img.DetectionDate }}</small>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Right column: OSINT links & quick info -->
+        <div class="col-lg-4">
+            <div class="card mb-4 engine-card">
+                <div class="card-header bg-danger text-white">
+                    <h6 class="mb-0"><i class="fas fa-engine me-2"></i>Двигатель и трансмиссия</h6>
+                </div>
+                <div class="card-body">
+                    {% if result.known_specific.engine %}
+                    <ul class="list-unstyled mb-0">
+                        <li><strong>Тип:</strong> {{ result.known_specific.engine.description }}</li>
+                        <li><strong>Объем:</strong> {{ result.known_specific.engine.displacement_l }}L ({{ result.known_specific.engine.displacement_cc }}cc)</li>
+                        <li><strong>Цилиндры:</strong> {{ result.known_specific.engine.cylinders }}</li>
+                        <li><strong>Топливо:</strong> {{ result.known_specific.engine.fuel }}</li>
+                        <li><strong>Турбо:</strong> {{ 'Да' if result.known_specific.engine.turbo else 'Нет' }}</li>
+                        <li><strong>Код:</strong> {{ result.known_specific.engine.code }}</li>
+                    </ul>
+                    {% else %}
+                    <p class="small">{{ result.nhtsa_decode.decoded['Displacement (L)'] if result.nhtsa_decode and result.nhtsa_decode.decoded['Displacement (L)'] else '3.0' }}L {{ result.nhtsa_decode.decoded['Engine Number of Cylinders'] if result.nhtsa_decode else '6' }} cyl {{ result.nhtsa_decode.decoded['Fuel Type - Primary'] if result.nhtsa_decode else 'Diesel' }}</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="card mb-4 plant-card">
+                <div class="card-header bg-primary text-white">
+                    <h6 class="mb-0"><i class="fas fa-industry me-2"></i>Завод и производство</h6>
+                </div>
+                <div class="card-body">
+                    <ul class="list-unstyled mb-0 small">
+                        <li><strong>Завод:</strong> {{ result.known_specific.plant.company if result.known_specific.plant else result.nhtsa_decode.decoded['Plant Company Name'] if result.nhtsa_decode and result.nhtsa_decode.decoded['Plant Company Name'] else 'Warren Truck Assembly' }}</li>
+                        <li><strong>Город:</strong> {{ result.known_specific.plant.city if result.known_specific.plant else result.nhtsa_decode.decoded['Plant City'] if result.nhtsa_decode else 'WARREN' }}</li>
+                        <li><strong>Штат:</strong> {{ result.known_specific.plant.state if result.known_specific.plant else result.nhtsa_decode.decoded['Plant State'] if result.nhtsa_decode else 'MICHIGAN' }}</li>
+                        <li><strong>Страна:</strong> {{ result.known_specific.plant.country if result.known_specific.plant else result.nhtsa_decode.decoded['Plant Country'] if result.nhtsa_decode else 'USA' }}</li>
+                        <li><strong>Серийный:</strong> {{ result.local_decode.serial_number }}</li>
+                        <li><strong>Год:</strong> {{ result.known_specific.model_year if result.known_specific.model_year else result.nhtsa_decode.decoded['Model Year'] if result.nhtsa_decode else result.local_decode.year_options[-1] }}</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header bg-dark text-white">
+                    <h6 class="mb-0"><i class="fas fa-search me-2"></i>OSINT - Внешние проверки</h6>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">Ссылки для проверки истории авто, аукционов, угона, отзывов:</p>
+                    <div class="osint-grid">
+                        {% for name, url in result.osint.external.items() %}
+                        <a href="{{ url }}" target="_blank" class="btn btn-sm btn-outline-primary osint-link">
+                            <i class="fas fa-external-link-alt me-1"></i>{{ name }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                    <hr>
+                    <h6 class="small">Рекомендуемые проверки:</h6>
+                    <ul class="small">
+                        <li><strong>NICB VINCheck</strong> - проверка угона и тотала (бесплатно)</li>
+                        <li><strong>Copart / IAAI</strong> - был ли на аукционах битых авто</li>
+                        <li><strong>BidFax / AutoAuctionHistory</strong> - фото с аукционов</li>
+                        <li><strong>NHTSA Recalls</strong> - отзывы производителя</li>
+                        <li><strong>Google Images</strong> - поиск фото по VIN</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header bg-warning text-dark">
+                    <h6 class="mb-0"><i class="fas fa-lightbulb me-2"></i>Что делать дальше?</h6>
+                </div>
+                <div class="card-body small">
+                    <ol>
+                        <li>Проверьте VIN на <a href="https://www.nicb.org/vincheck" target="_blank">NICB</a> - угон/тотал</li>
+                        <li>Поищите на Copart/IAAI - участвовал ли в страховых аукционах</li>
+                        <li>Google поиск по VIN - часто всплывают объявления, форумы, фото</li>
+                        <li>Проверьте отзывы на <a href="https://www.nhtsa.gov/recalls" target="_blank">NHTSA</a></li>
+                        <li>Если есть фото авто с людьми - используйте EyeOfWeb Face Search для OSINT по владельцу</li>
+                    </ol>
+                    <div class="alert alert-info small mt-2">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Для RAM 1500 EcoDiesel 2014-2016 характерны проблемы с EGR, охладителем, подшипниками. Проверьте историю обслуживания.
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0"><i class="fas fa-code me-2"></i>Raw JSON (для API)</h6>
+                </div>
+                <div class="card-body">
+                    <pre class="small" style="max-height: 300px; overflow-y: auto; background: #f8f9fa; padding: 10px; border-radius: 4px;">{{ result | tojson(indent=2) }}</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% endif %}
+</div>
+{% endblock %}

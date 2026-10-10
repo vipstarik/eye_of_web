@@ -92,7 +92,7 @@
         </div>
     </div>
     
-    <div class="col-md-6 mb-4">
+    <div class="col-md-4 mb-4">
         <div class="card h-100 border-0 shadow-sm">
             <div class="card-body text-center p-4">
                 <div class="display-4 text-primary mb-3">
@@ -103,6 +103,35 @@
                 <a href="{{ url_for('web.face_comparison') }}" class="btn btn-sm btn-primary">
                     Karşılaştırma Yap
                 </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm" style="border: 2px solid #ffc107 !important;">
+            <div class="card-body text-center p-4">
+                <div class="display-4 text-warning mb-3">
+                    <i class="fas fa-car"></i>
+                </div>
+                <h3 class="h4 mb-3">Поиск авто по VIN</h3>
+                <p class="text-muted mb-4">VIN коду по автомобилю найди. OSINT, NHTSA, аукционы, история.</p>
+                <a href="{{ url_for('web.vin_search') }}" class="btn btn-sm btn-warning">
+                    <i class="fas fa-search me-1"></i>VIN Поиск
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-3 d-flex align-items-center">
+                <i class="fas fa-barcode fa-2x text-muted me-3"></i>
+                <div>
+                    <strong>Быстрый VIN поиск:</strong> 1C6RR7JM2FS578550 — RAM 1500 Laramie 2015 EcoDiesel 3.0L 4x4
+                    <a href="{{ url_for('web.vin_search') }}?vin=1C6RR7JM2FS578550" class="btn btn-sm btn-outline-dark ms-3">Открыть</a>
+                </div>
             </div>
         </div>
     </div>
